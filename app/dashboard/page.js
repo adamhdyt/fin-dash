@@ -18,7 +18,8 @@ import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, 
 import {
   Wallet, TrendingUp, TrendingDown, PlusCircle, LogOut, LayoutDashboard, ArrowLeftRight,
   Tag, Download, Trash2, Edit2, ArrowUpCircle, ArrowDownCircle, Loader2, Search, Menu, X,
-  Target, AlertTriangle, CheckCircle2, Upload, FileText, Trophy, Plus
+  Target, AlertTriangle, CheckCircle2, Upload, FileText, Trophy, Plus,
+  Repeat, HandCoins, BarChart3, Shield, Calendar
 } from 'lucide-react'
 
 export default function DashboardPage() {
@@ -118,9 +119,13 @@ export default function DashboardPage() {
     { id: 'pockets', label: 'Kantong', icon: Wallet },
     { id: 'budgets', label: 'Budget', icon: Target },
     { id: 'goals', label: 'Goals', icon: Trophy },
+    { id: 'recurring', label: 'Recurring', icon: Repeat },
+    { id: 'debts', label: 'Utang/Piutang', icon: HandCoins },
+    { id: 'reports', label: 'Laporan', icon: BarChart3 },
     { id: 'categories', label: 'Kategori', icon: Tag },
     { id: 'import', label: 'Import CSV', icon: Upload },
     { id: 'export', label: 'Export Data', icon: Download },
+    ...(user.role === 'admin' ? [{ id: '__admin_link', label: 'Admin Panel', icon: Shield, href: '/admin' }] : []),
   ]
 
   return (
@@ -133,10 +138,16 @@ export default function DashboardPage() {
         </div>
         <nav className="p-3 space-y-1">
           {navItems.map((n) => (
-            <button key={n.id} onClick={() => { setTab(n.id); setSidebarOpen(false) }}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition ${tab === n.id ? 'bg-emerald-50 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300' : 'hover:bg-muted text-muted-foreground'}`}>
-              <n.icon className="h-4 w-4" />{n.label}
-            </button>
+            n.href ? (
+              <a key={n.id} href={n.href} className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition hover:bg-muted text-muted-foreground">
+                <n.icon className="h-4 w-4" />{n.label}
+              </a>
+            ) : (
+              <button key={n.id} onClick={() => { setTab(n.id); setSidebarOpen(false) }}
+                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition ${tab === n.id ? 'bg-emerald-50 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300' : 'hover:bg-muted text-muted-foreground'}`}>
+                <n.icon className="h-4 w-4" />{n.label}
+              </button>
+            )
           ))}
         </nav>
         <div className="absolute bottom-0 left-0 right-0 p-3 border-t bg-card">
@@ -203,6 +214,15 @@ export default function DashboardPage() {
           )}
           {tab === 'goals' && (
             <GoalsTab />
+          )}
+          {tab === 'recurring' && (
+            <RecurringTab accounts={accounts} categories={categories} onRefreshAll={loadAll} />
+          )}
+          {tab === 'debts' && (
+            <DebtsTab />
+          )}
+          {tab === 'reports' && (
+            <ReportsTab />
           )}
           {tab === 'categories' && (
             <CategoriesTab categories={categories}
@@ -1605,3 +1625,623 @@ function ImportTab({ accounts, categories, onImported }) {
     </div>
   )
 }
+
+// ============ RECURRING TAB ============
+const FREQUENCIES = [
+  { value: 'daily', label: 'Harian' },
+  { value: 'weekly', label: 'Mingguan' },
+  { value: 'monthly', label: 'Bulanan' },
+  { value: 'yearly', label: 'Tahunan' },
+]
+
+function RecurringTab({ accounts, categories, onRefreshAll }) {
+  const [items, setItems] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [dialog, setDialog] = useState({ open: false, editing: null })
+
+  const load = async () => {
+    setLoading(true)
+    try {
+      const r = await apiFetch('/recurring')
+      setItems(r.recurring)
+      if (onRefreshAll) await onRefreshAll()
+    } catch (e) { toast.error(e.message) }
+    finally { setLoading(false) }
+  }
+  useEffect(() => { load() }, [])
+
+  const accMap = Object.fromEntries(accounts.map((a) => [a.id, a]))
+  const catMap = Object.fromEntries(categories.map((c) => [c.id, c]))
+
+  return (
+    <div className="space-y-4">
+      <div className="flex justify-end">
+        <Button onClick={() => setDialog({ open: true, editing: null })} className="bg-emerald-600 hover:bg-emerald-700">
+          <PlusCircle className="h-4 w-4 mr-2" />Buat Recurring
+        </Button>
+      </div>
+      {loading ? (
+        <div className="py-10 flex justify-center"><Loader2 className="h-6 w-6 animate-spin text-emerald-600" /></div>
+      ) : items.length === 0 ? (
+        <Card>
+          <CardContent className="py-16 text-center">
+            <Repeat className="h-12 w-12 mx-auto text-muted-foreground mb-3" />
+            <p className="font-medium mb-1">Belum ada transaksi berulang</p>
+            <p className="text-sm text-muted-foreground mb-4">Otomatisasi gaji bulanan, tagihan internet, atau cicilan.</p>
+            <Button onClick={() => setDialog({ open: true, editing: null })} className="bg-emerald-600 hover:bg-emerald-700">
+              <PlusCircle className="h-4 w-4 mr-2" />Buat Recurring Pertama
+            </Button>
+          </CardContent>
+        </Card>
+      ) : (
+        <div className="grid gap-3 md:grid-cols-2">
+          {items.map((r) => {
+            const cat = catMap[r.category_id]
+            const acc = accMap[r.account_id]
+            const isIncome = r.type === 'income'
+            return (
+              <Card key={r.id} className={r.active ? '' : 'opacity-60'}>
+                <CardContent className="p-5">
+                  <div className="flex items-start justify-between mb-3">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className={`h-11 w-11 rounded-lg flex items-center justify-center text-xl ${isIncome ? 'bg-emerald-50' : 'bg-rose-50'} dark:bg-opacity-30`}>{cat?.icon || (isIncome ? '💰' : '💸')}</div>
+                      <div className="min-w-0">
+                        <p className="font-semibold truncate">{r.name}</p>
+                        <p className="text-xs text-muted-foreground">{cat?.name || '?'} • {acc?.icon} {acc?.name || '?'}</p>
+                      </div>
+                    </div>
+                    <div className="flex gap-1 flex-shrink-0">
+                      <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setDialog({ open: true, editing: r })}><Edit2 className="h-3.5 w-3.5" /></Button>
+                      <Button variant="ghost" size="icon" className="h-8 w-8 text-rose-600" onClick={async () => {
+                        if (!confirm('Hapus recurring ini? Transaksi yang sudah dibuat tetap ada.')) return
+                        await apiFetch(`/recurring/${r.id}`, { method: 'DELETE' })
+                        toast.success('Recurring dihapus'); await load()
+                      }}><Trash2 className="h-3.5 w-3.5" /></Button>
+                    </div>
+                  </div>
+                  <div className="flex items-baseline justify-between mb-3">
+                    <p className={`text-2xl font-bold tabular-nums ${isIncome ? 'text-emerald-600' : 'text-rose-600'}`}>
+                      {isIncome ? '+' : '-'}{formatIDR(r.amount)}
+                    </p>
+                    <Badge variant={r.active ? 'default' : 'secondary'}>{r.active ? 'Aktif' : 'Nonaktif'}</Badge>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 text-xs">
+                    <div className="p-2 rounded bg-muted/40">
+                      <p className="text-muted-foreground">Frekuensi</p>
+                      <p className="font-medium">{FREQUENCIES.find((f) => f.value === r.frequency)?.label}</p>
+                    </div>
+                    <div className="p-2 rounded bg-muted/40">
+                      <p className="text-muted-foreground">Jadwal berikutnya</p>
+                      <p className="font-medium">{formatDate(r.next_date)}</p>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            )
+          })}
+        </div>
+      )}
+      <RecurringDialog state={dialog} setState={setDialog} accounts={accounts} categories={categories} onSaved={load} />
+    </div>
+  )
+}
+
+function RecurringDialog({ state, setState, accounts, categories, onSaved }) {
+  const editing = state.editing
+  const [form, setForm] = useState({
+    name: '', type: 'expense', amount: '', account_id: '', category_id: '',
+    frequency: 'monthly', start_date: new Date().toISOString().slice(0, 10),
+    end_date: '', note: '', active: true,
+  })
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    if (state.open) {
+      if (editing) setForm({
+        name: editing.name, type: editing.type, amount: String(editing.amount),
+        account_id: editing.account_id, category_id: editing.category_id,
+        frequency: editing.frequency,
+        start_date: new Date(editing.start_date).toISOString().slice(0, 10),
+        end_date: editing.end_date ? new Date(editing.end_date).toISOString().slice(0, 10) : '',
+        note: editing.note || '', active: editing.active,
+      })
+      else setForm({
+        name: '', type: 'expense', amount: '', account_id: accounts[0]?.id || '',
+        category_id: '', frequency: 'monthly',
+        start_date: new Date().toISOString().slice(0, 10),
+        end_date: '', note: '', active: true,
+      })
+    }
+  }, [state.open, editing, accounts])
+
+  const catsForType = categories.filter((c) => c.type === form.type)
+
+  const save = async () => {
+    if (!form.name.trim()) return toast.error('Nama wajib diisi')
+    if (!form.amount || Number(form.amount) <= 0) return toast.error('Jumlah > 0')
+    if (!form.account_id) return toast.error('Pilih kantong')
+    if (!form.category_id) return toast.error('Pilih kategori')
+    setSaving(true)
+    try {
+      const payload = {
+        name: form.name.trim(), type: form.type, amount: Number(form.amount),
+        account_id: form.account_id, category_id: form.category_id,
+        frequency: form.frequency, start_date: form.start_date,
+        end_date: form.end_date || null, note: form.note, active: form.active,
+      }
+      if (editing) await apiFetch(`/recurring/${editing.id}`, { method: 'PUT', body: JSON.stringify(payload) })
+      else await apiFetch('/recurring', { method: 'POST', body: JSON.stringify(payload) })
+      toast.success(editing ? 'Recurring diperbarui' : 'Recurring dibuat')
+      setState({ open: false, editing: null }); await onSaved()
+    } catch (e) { toast.error(e.message) }
+    finally { setSaving(false) }
+  }
+
+  return (
+    <Dialog open={state.open} onOpenChange={(o) => setState({ open: o, editing: o ? editing : null })}>
+      <DialogContent className="max-h-[90vh] overflow-y-auto">
+        <DialogHeader><DialogTitle>{editing ? 'Edit Recurring' : 'Transaksi Berulang Baru'}</DialogTitle></DialogHeader>
+        <div className="space-y-3">
+          <div className="space-y-2">
+            <Label>Nama</Label>
+            <Input placeholder="Gaji bulanan" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            {[{ v: 'expense', l: 'Pengeluaran' }, { v: 'income', l: 'Pemasukan' }].map((t) => (
+              <button key={t.v} type="button" onClick={() => setForm({ ...form, type: t.v, category_id: '' })}
+                className={`px-3 py-2 rounded-lg text-sm font-medium border ${form.type === t.v ? (t.v === 'income' ? 'bg-emerald-600 text-white border-transparent' : 'bg-rose-600 text-white border-transparent') : 'bg-background hover:bg-muted'}`}>{t.l}</button>
+            ))}
+          </div>
+          <div className="space-y-2">
+            <Label>Jumlah</Label>
+            <Input type="number" min="0" step="1000" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-2">
+              <Label>Kantong</Label>
+              <Select value={form.account_id} onValueChange={(v) => setForm({ ...form, account_id: v })}>
+                <SelectTrigger><SelectValue placeholder="Pilih" /></SelectTrigger>
+                <SelectContent>{accounts.map((a) => <SelectItem key={a.id} value={a.id}>{a.icon} {a.name}</SelectItem>)}</SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>Kategori</Label>
+              <Select value={form.category_id} onValueChange={(v) => setForm({ ...form, category_id: v })}>
+                <SelectTrigger><SelectValue placeholder="Pilih" /></SelectTrigger>
+                <SelectContent>{catsForType.map((c) => <SelectItem key={c.id} value={c.id}>{c.icon} {c.name}</SelectItem>)}</SelectContent>
+              </Select>
+            </div>
+          </div>
+          <div className="grid grid-cols-3 gap-3">
+            <div className="space-y-2">
+              <Label>Frekuensi</Label>
+              <Select value={form.frequency} onValueChange={(v) => setForm({ ...form, frequency: v })}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>{FREQUENCIES.map((f) => <SelectItem key={f.value} value={f.value}>{f.label}</SelectItem>)}</SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>Mulai</Label>
+              <Input type="date" value={form.start_date} onChange={(e) => setForm({ ...form, start_date: e.target.value })} />
+            </div>
+            <div className="space-y-2">
+              <Label>Berakhir</Label>
+              <Input type="date" value={form.end_date} onChange={(e) => setForm({ ...form, end_date: e.target.value })} />
+            </div>
+          </div>
+          <div className="space-y-2">
+            <Label>Catatan (opsional)</Label>
+            <Input value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} />
+          </div>
+          {editing && (
+            <div className="flex items-center gap-2">
+              <input type="checkbox" id="active" checked={form.active} onChange={(e) => setForm({ ...form, active: e.target.checked })} />
+              <Label htmlFor="active">Aktif (hasilkan transaksi otomatis)</Label>
+            </div>
+          )}
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setState({ open: false, editing: null })}>Batal</Button>
+          <Button onClick={save} disabled={saving} className="bg-emerald-600 hover:bg-emerald-700">
+            {saving && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}Simpan
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+// ============ DEBTS TAB ============
+function DebtsTab() {
+  const [items, setItems] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [dialog, setDialog] = useState({ open: false, editing: null })
+  const [payDialog, setPayDialog] = useState({ open: false, debt: null })
+
+  const load = async () => {
+    setLoading(true)
+    try {
+      const r = await apiFetch('/debts')
+      setItems(r.debts)
+    } catch (e) { toast.error(e.message) }
+    finally { setLoading(false) }
+  }
+  useEffect(() => { load() }, [])
+
+  const debts = items.filter((d) => d.kind === 'debt')
+  const receivables = items.filter((d) => d.kind === 'receivable')
+  const totalDebt = debts.reduce((s, d) => s + d.remaining, 0)
+  const totalReceivable = receivables.reduce((s, d) => s + d.remaining, 0)
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <Card>
+          <CardContent className="p-5">
+            <p className="text-xs uppercase tracking-wide text-muted-foreground">Total Utang (Anda pinjam)</p>
+            <p className="text-2xl font-bold tabular-nums text-rose-600">{formatIDR(totalDebt)}</p>
+            <p className="text-xs text-muted-foreground mt-1">{debts.length} utang aktif</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-5">
+            <p className="text-xs uppercase tracking-wide text-muted-foreground">Total Piutang (dipinjamkan)</p>
+            <p className="text-2xl font-bold tabular-nums text-emerald-600">{formatIDR(totalReceivable)}</p>
+            <p className="text-xs text-muted-foreground mt-1">{receivables.length} piutang aktif</p>
+          </CardContent>
+        </Card>
+      </div>
+
+      <div className="flex justify-end">
+        <Button onClick={() => setDialog({ open: true, editing: null })} className="bg-emerald-600 hover:bg-emerald-700">
+          <PlusCircle className="h-4 w-4 mr-2" />Tambah Utang/Piutang
+        </Button>
+      </div>
+
+      {loading ? (
+        <div className="py-10 flex justify-center"><Loader2 className="h-6 w-6 animate-spin text-emerald-600" /></div>
+      ) : items.length === 0 ? (
+        <Card>
+          <CardContent className="py-16 text-center">
+            <HandCoins className="h-12 w-12 mx-auto text-muted-foreground mb-3" />
+            <p className="font-medium">Belum ada utang atau piutang</p>
+            <p className="text-sm text-muted-foreground">Catat pinjaman & piutang Anda untuk melacak sisa & tenor.</p>
+          </CardContent>
+        </Card>
+      ) : (
+        <div className="grid gap-3 md:grid-cols-2">
+          {items.map((d) => <DebtCard key={d.id} d={d}
+            onEdit={() => setDialog({ open: true, editing: d })}
+            onPay={() => setPayDialog({ open: true, debt: d })}
+            onDelete={async () => {
+              if (!confirm('Hapus record ini?')) return
+              await apiFetch(`/debts/${d.id}`, { method: 'DELETE' })
+              toast.success('Dihapus'); await load()
+            }} />)}
+        </div>
+      )}
+      <DebtDialog state={dialog} setState={setDialog} onSaved={load} />
+      <DebtPayDialog state={payDialog} setState={setPayDialog} onSaved={load} />
+    </div>
+  )
+}
+
+function DebtCard({ d, onEdit, onPay, onDelete }) {
+  const isDebt = d.kind === 'debt'
+  const isPaid = d.is_paid
+  const overdue = d.due_date && new Date(d.due_date) < new Date() && !isPaid
+  return (
+    <Card className={isPaid ? 'opacity-70' : ''}>
+      <CardContent className="p-5">
+        <div className="flex items-start justify-between mb-3">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className={`h-11 w-11 rounded-lg flex items-center justify-center text-xl ${isDebt ? 'bg-rose-50 dark:bg-rose-900/30' : 'bg-emerald-50 dark:bg-emerald-900/30'}`}>
+              {isDebt ? '📥' : '📤'}
+            </div>
+            <div className="min-w-0">
+              <p className="font-semibold truncate">{d.name}</p>
+              <p className="text-xs text-muted-foreground truncate">
+                {isDebt ? 'Utang ke' : 'Dipinjamkan ke'}: {d.party_name || '-'}
+              </p>
+            </div>
+          </div>
+          <div className="flex gap-1 flex-shrink-0">
+            <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onEdit}><Edit2 className="h-3.5 w-3.5" /></Button>
+            <Button variant="ghost" size="icon" className="h-8 w-8 text-rose-600" onClick={onDelete}><Trash2 className="h-3.5 w-3.5" /></Button>
+          </div>
+        </div>
+        <div className="flex items-baseline justify-between mb-2">
+          <p className="text-sm text-muted-foreground">Progress bayar</p>
+          <p className="font-bold tabular-nums">{d.percent}%</p>
+        </div>
+        <div className="h-2.5 rounded-full bg-muted overflow-hidden mb-3">
+          <div className={`h-full transition-all ${isDebt ? 'bg-rose-500' : 'bg-emerald-500'}`} style={{ width: `${d.percent}%` }} />
+        </div>
+        <div className="flex justify-between text-sm mb-3">
+          <div>
+            <p className="text-xs text-muted-foreground">{isDebt ? 'Terbayar' : 'Diterima'}</p>
+            <p className="font-semibold tabular-nums">{formatIDR(d.amount_paid)}</p>
+          </div>
+          <div className="text-right">
+            <p className="text-xs text-muted-foreground">Total</p>
+            <p className="font-semibold tabular-nums">{formatIDR(d.amount_total)}</p>
+          </div>
+          <div className="text-right">
+            <p className="text-xs text-muted-foreground">Sisa</p>
+            <p className={`font-semibold tabular-nums ${isDebt ? 'text-rose-600' : 'text-emerald-600'}`}>{formatIDR(d.remaining)}</p>
+          </div>
+        </div>
+        {d.due_date && (
+          <div className={`text-xs mb-3 flex items-center gap-1 ${overdue ? 'text-rose-600 font-medium' : 'text-muted-foreground'}`}>
+            <Calendar className="h-3 w-3" />
+            Jatuh tempo: {formatDate(d.due_date)} {overdue && '(TERLAMBAT)'}
+          </div>
+        )}
+        <Button size="sm" onClick={onPay} className="w-full bg-emerald-600 hover:bg-emerald-700" disabled={isPaid}>
+          <Plus className="h-3.5 w-3.5 mr-1" />{isDebt ? 'Catat Pembayaran' : 'Catat Penerimaan'}
+        </Button>
+      </CardContent>
+    </Card>
+  )
+}
+
+function DebtDialog({ state, setState, onSaved }) {
+  const editing = state.editing
+  const [form, setForm] = useState({ kind: 'debt', name: '', party_name: '', amount_total: '', amount_paid: '0', due_date: '', interest_rate: '', note: '' })
+  const [saving, setSaving] = useState(false)
+  useEffect(() => {
+    if (state.open) {
+      if (editing) setForm({
+        kind: editing.kind, name: editing.name, party_name: editing.party_name || '',
+        amount_total: String(editing.amount_total), amount_paid: String(editing.amount_paid),
+        due_date: editing.due_date ? new Date(editing.due_date).toISOString().slice(0, 10) : '',
+        interest_rate: editing.interest_rate != null ? String(editing.interest_rate) : '',
+        note: editing.note || '',
+      })
+      else setForm({ kind: 'debt', name: '', party_name: '', amount_total: '', amount_paid: '0', due_date: '', interest_rate: '', note: '' })
+    }
+  }, [state.open, editing])
+  const save = async () => {
+    if (!form.name.trim() || !form.amount_total) return toast.error('Nama & jumlah wajib diisi')
+    setSaving(true)
+    try {
+      const payload = {
+        kind: form.kind, name: form.name.trim(), party_name: form.party_name.trim(),
+        amount_total: Number(form.amount_total), amount_paid: Number(form.amount_paid) || 0,
+        due_date: form.due_date || null,
+        interest_rate: form.interest_rate ? Number(form.interest_rate) : null,
+        note: form.note,
+      }
+      if (editing) await apiFetch(`/debts/${editing.id}`, { method: 'PUT', body: JSON.stringify(payload) })
+      else await apiFetch('/debts', { method: 'POST', body: JSON.stringify(payload) })
+      toast.success(editing ? 'Diperbarui' : 'Ditambahkan')
+      setState({ open: false, editing: null }); await onSaved()
+    } catch (e) { toast.error(e.message) }
+    finally { setSaving(false) }
+  }
+  return (
+    <Dialog open={state.open} onOpenChange={(o) => setState({ open: o, editing: o ? editing : null })}>
+      <DialogContent className="max-h-[90vh] overflow-y-auto">
+        <DialogHeader><DialogTitle>{editing ? 'Edit' : 'Tambah'} Utang / Piutang</DialogTitle></DialogHeader>
+        <div className="space-y-3">
+          <div className="grid grid-cols-2 gap-2">
+            {[{ v: 'debt', l: 'Utang (Anda pinjam)' }, { v: 'receivable', l: 'Piutang (dipinjamkan)' }].map((t) => (
+              <button key={t.v} type="button" onClick={() => setForm({ ...form, kind: t.v })}
+                className={`px-3 py-2 rounded-lg text-sm font-medium border ${form.kind === t.v ? (t.v === 'debt' ? 'bg-rose-600 text-white border-transparent' : 'bg-emerald-600 text-white border-transparent') : 'bg-background hover:bg-muted'}`}>{t.l}</button>
+            ))}
+          </div>
+          <div className="space-y-2">
+            <Label>Nama utang/piutang</Label>
+            <Input placeholder="Cicilan Motor" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+          </div>
+          <div className="space-y-2">
+            <Label>Pihak / Kreditur</Label>
+            <Input placeholder={form.kind === 'debt' ? 'Bank BCA' : 'Nama teman'} value={form.party_name} onChange={(e) => setForm({ ...form, party_name: e.target.value })} />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-2">
+              <Label>Jumlah total</Label>
+              <Input type="number" min="0" step="10000" value={form.amount_total} onChange={(e) => setForm({ ...form, amount_total: e.target.value })} />
+            </div>
+            <div className="space-y-2">
+              <Label>Sudah dibayar</Label>
+              <Input type="number" min="0" value={form.amount_paid} onChange={(e) => setForm({ ...form, amount_paid: e.target.value })} />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-2">
+              <Label>Jatuh tempo</Label>
+              <Input type="date" value={form.due_date} onChange={(e) => setForm({ ...form, due_date: e.target.value })} />
+            </div>
+            <div className="space-y-2">
+              <Label>Bunga (% p.a., opsional)</Label>
+              <Input type="number" step="0.1" value={form.interest_rate} onChange={(e) => setForm({ ...form, interest_rate: e.target.value })} />
+            </div>
+          </div>
+          <div className="space-y-2">
+            <Label>Catatan</Label>
+            <Textarea rows={2} value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setState({ open: false, editing: null })}>Batal</Button>
+          <Button onClick={save} disabled={saving} className="bg-emerald-600 hover:bg-emerald-700">
+            {saving && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}Simpan
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function DebtPayDialog({ state, setState, onSaved }) {
+  const debt = state.debt
+  const [amount, setAmount] = useState('')
+  const [saving, setSaving] = useState(false)
+  useEffect(() => { if (state.open) setAmount('') }, [state.open])
+  if (!debt) return null
+  const submit = async () => {
+    if (!amount || Number(amount) <= 0) return toast.error('Jumlah > 0')
+    setSaving(true)
+    try {
+      await apiFetch(`/debts/${debt.id}/pay`, { method: 'POST', body: JSON.stringify({ amount: Number(amount) }) })
+      toast.success('Pembayaran dicatat')
+      setState({ open: false, debt: null }); await onSaved()
+    } catch (e) { toast.error(e.message) }
+    finally { setSaving(false) }
+  }
+  return (
+    <Dialog open={state.open} onOpenChange={(o) => setState({ open: o, debt: o ? debt : null })}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{debt.kind === 'debt' ? 'Catat Pembayaran' : 'Catat Penerimaan'}: {debt.name}</DialogTitle>
+          <DialogDescription>Sisa: {formatIDR(debt.remaining)} dari {formatIDR(debt.amount_total)}</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-2">
+          <Label>Jumlah (IDR)</Label>
+          <Input type="number" min="0" step="10000" value={amount} onChange={(e) => setAmount(e.target.value)} className="text-lg font-semibold" autoFocus />
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setState({ open: false, debt: null })}>Batal</Button>
+          <Button onClick={submit} disabled={saving} className="bg-emerald-600 hover:bg-emerald-700">
+            {saving && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}Catat
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+// ============ REPORTS TAB ============
+function ReportsTab() {
+  const [netWorth, setNetWorth] = useState(null)
+  const [cashFlow, setCashFlow] = useState(null)
+  const [year, setYear] = useState(new Date().getFullYear())
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    (async () => {
+      setLoading(true)
+      try {
+        const [nw, cf] = await Promise.all([
+          apiFetch('/reports/net-worth?months=12'),
+          apiFetch(`/reports/cash-flow?year=${year}`),
+        ])
+        setNetWorth(nw); setCashFlow(cf)
+      } catch (e) { toast.error(e.message) }
+      finally { setLoading(false) }
+    })()
+  }, [year])
+
+  if (loading || !netWorth || !cashFlow) return <div className="py-10 flex justify-center"><Loader2 className="h-6 w-6 animate-spin text-emerald-600" /></div>
+
+  const latestNW = netWorth.series[netWorth.series.length - 1]
+  return (
+    <div className="space-y-6">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <Card>
+          <CardContent className="p-5">
+            <p className="text-xs uppercase tracking-wide text-muted-foreground">Net Worth Saat Ini</p>
+            <p className={`text-2xl font-bold tabular-nums ${latestNW?.net_worth >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>{formatIDR(latestNW?.net_worth || 0)}</p>
+            <p className="text-xs text-muted-foreground mt-1">Aset {formatIDR(latestNW?.assets || 0)} − Utang {formatIDR(latestNW?.liabilities || 0)}</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-5">
+            <p className="text-xs uppercase tracking-wide text-muted-foreground">Total Pemasukan {year}</p>
+            <p className="text-2xl font-bold tabular-nums text-emerald-600">{formatIDR(cashFlow.summary.total_income)}</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-5">
+            <p className="text-xs uppercase tracking-wide text-muted-foreground">Total Pengeluaran {year}</p>
+            <p className="text-2xl font-bold tabular-nums text-rose-600">{formatIDR(cashFlow.summary.total_expense)}</p>
+          </CardContent>
+        </Card>
+      </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Net Worth 12 Bulan Terakhir</CardTitle>
+          <CardDescription>Aset dikurangi Utang, per akhir bulan</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <ResponsiveContainer width="100%" height={320}>
+            <LineChart data={netWorth.series}>
+              <CartesianGrid strokeDasharray="3 3" opacity={0.3} />
+              <XAxis dataKey="label" fontSize={12} />
+              <YAxis fontSize={12} tickFormatter={(v) => `${(v / 1000000).toFixed(1)}jt`} />
+              <Tooltip formatter={(v) => formatIDR(v)} />
+              <Legend />
+              <Line type="monotone" dataKey="assets" name="Aset" stroke="#10b981" strokeWidth={2} dot={{ r: 3 }} />
+              <Line type="monotone" dataKey="liabilities" name="Utang" stroke="#ef4444" strokeWidth={2} dot={{ r: 3 }} />
+              <Line type="monotone" dataKey="net_worth" name="Net Worth" stroke="#3b82f6" strokeWidth={3} dot={{ r: 4 }} />
+            </LineChart>
+          </ResponsiveContainer>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between">
+          <div>
+            <CardTitle>Cash Flow Tahunan</CardTitle>
+            <CardDescription>Perbandingan pemasukan vs pengeluaran per bulan</CardDescription>
+          </div>
+          <Select value={String(year)} onValueChange={(v) => setYear(Number(v))}>
+            <SelectTrigger className="w-32"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {Array.from({ length: 5 }).map((_, i) => {
+                const y = new Date().getFullYear() - i
+                return <SelectItem key={y} value={String(y)}>{y}</SelectItem>
+              })}
+            </SelectContent>
+          </Select>
+        </CardHeader>
+        <CardContent>
+          <ResponsiveContainer width="100%" height={320}>
+            <BarChart data={cashFlow.months}>
+              <CartesianGrid strokeDasharray="3 3" opacity={0.3} />
+              <XAxis dataKey="label" fontSize={12} />
+              <YAxis fontSize={12} tickFormatter={(v) => `${(v / 1000000).toFixed(1)}jt`} />
+              <Tooltip formatter={(v) => formatIDR(v)} />
+              <Legend />
+              <Bar dataKey="income" name="Pemasukan" fill="#10b981" radius={[6, 6, 0, 0]} />
+              <Bar dataKey="expense" name="Pengeluaran" fill="#ef4444" radius={[6, 6, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Cash Flow Detail per Bulan</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="overflow-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b">
+                  <th className="text-left p-2">Bulan</th>
+                  <th className="text-right p-2">Pemasukan</th>
+                  <th className="text-right p-2">Pengeluaran</th>
+                  <th className="text-right p-2">Net</th>
+                </tr>
+              </thead>
+              <tbody>
+                {cashFlow.months.map((m) => (
+                  <tr key={m.month} className="border-b">
+                    <td className="p-2">{m.label} {year}</td>
+                    <td className="p-2 text-right tabular-nums text-emerald-600">{formatIDR(m.income)}</td>
+                    <td className="p-2 text-right tabular-nums text-rose-600">{formatIDR(m.expense)}</td>
+                    <td className={`p-2 text-right tabular-nums font-semibold ${m.net >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>{formatIDR(m.net)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+

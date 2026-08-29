@@ -245,6 +245,81 @@ backend:
         agent: "testing"
         comment: "✅ All import CSV tests passed (9/9). POST /import/transactions with commit=false returns preview with correct validation (total=4, valid=2, invalid=2). Row 1 (income 5M) valid with account/category resolved by name. Row 2 (expense 45K) valid with default account. Row 3 invalid (bad date). Row 4 invalid (bad amount). POST with commit=true inserts 2 valid transactions. GET /transactions confirms imported data with correct amounts and dates. Validation: invalid default_account_id returns 400, empty rows returns 400. Category matching: non-existent category falls back to default. Type normalization: 'EXPENSE', 'Income', ' income ' all work (case-insensitive, trimmed). RLS working: User B cannot use User A's account_id (returns 400)."
 
+  - task: "Recurring Transactions CRUD + auto-materialization"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "GET /api/recurring auto-materializes: creates transactions for all active recurring where next_date <= today, advances next_date. Supports frequencies daily/weekly/monthly/yearly. POST /api/recurring {name, type, amount, account_id, category_id, frequency, start_date, end_date?, note}. PUT/DELETE. Deactivates after end_date. Created transactions carry tag='recurring' and recurring_id ref."
+      - working: true
+        agent: "testing"
+        comment: "✅ All 10 recurring transaction tests passed. POST creates recurring with all frequencies (daily/weekly/monthly/yearly). GET auto-materializes correctly: monthly recurring 2 months ago created 2 transactions, daily 7 days ago created 8 transactions. All transactions have tag='recurring'. PUT updates work, active=false stops materialization. DELETE removes recurring. Validation returns 400 for missing fields. RLS working: User B cannot see User A's recurring."
+
+  - task: "Debts (Utang/Piutang) CRUD + payments"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "GET /api/debts returns with computed remaining, percent, is_paid. POST /api/debts {kind: debt|receivable, name, party_name, amount_total, amount_paid?, due_date?, interest_rate?, note}. PUT/DELETE. POST /api/debts/[id]/pay {amount} - atomic $inc on amount_paid."
+      - working: true
+        agent: "testing"
+        comment: "✅ All 9 debt tests passed. POST creates debt (kind=debt) and receivable (kind=receivable). GET returns computed fields: remaining=12M, percent=0, is_paid=false initially. POST /debts/[id]/pay works atomically: pay 3M → remaining=9M, percent=25; pay 9M more → remaining=0, percent=100, is_paid=true. Both kinds (debt/receivable) work correctly. Validation returns 400 for invalid kind. RLS working: User B cannot pay User A's debt."
+
+  - task: "Reports: net-worth timeline & yearly cash flow"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "GET /api/reports/net-worth?months=12 returns array of month-end series: {label, assets, liabilities, net_worth}. Assets computed as sum of account balances (initial + income + transferIn - expense - transferOut) with date filter <= end of month. Liabilities = sum of unpaid debts. GET /api/reports/cash-flow?year=2025 returns 12 months + summary totals."
+      - working: true
+        agent: "testing"
+        comment: "✅ All 4 report tests passed. GET /reports/net-worth?months=12 returns 12-month series with accurate calculations: assets=6M (1M initial + 5M income), liabilities=2M (unpaid debt), net_worth=4M. GET /reports/cash-flow?year=YYYY returns 12 months with income/expense/net per month, current month shows correct income (5M), summary totals present. Previous year returns zeros (correct)."
+
+  - task: "Blog CMS: public list/detail + admin CRUD"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "PUBLIC (no auth): GET /api/blog/posts?page=&category=&search= returns published posts with pagination + distinct categories list. GET /api/blog/posts/[slug] returns single post + related (same category). Both filter status='published'. ADMIN (role=admin required): GET /api/admin/blog/posts (all incl. drafts), POST create (auto-slug from title, auto excerpt from content, auto reading_time), PUT update, DELETE. Post schema includes meta_title, meta_description, og_image, cover_image, category, tags, status."
+      - working: true
+        agent: "testing"
+        comment: "✅ All 12 blog tests passed. Public endpoints: GET /blog/posts returns published posts with categories list, GET /blog/posts/[slug] returns single post with reading_time and published_at, draft posts NOT visible in public list. Admin endpoints: POST /admin/claim promotes first user to admin (returns 403 when admin exists), POST /admin/blog/posts creates post with auto-slug 'cara-budgeting-101', GET /admin/blog/posts shows all posts (draft + published), PUT publishes draft making it public, DELETE removes post. Validation returns 400 for slug conflict. RLS: Non-admin gets 403 on admin endpoints."
+
+  - task: "Admin: user list, stats, claim-admin bootstrap"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "POST /api/admin/claim: promotes calling user to admin ONLY if no admin exists yet (bootstrap flow). Returns new token. GET /api/admin/users: list all users with transaction_count (admin only). GET /api/admin/stats: total_users, total_transactions, total_posts, published_posts, user_growth last 6 months. Non-admin gets 403 on /admin/* routes (except /admin/claim)."
+      - working: true
+        agent: "testing"
+        comment: "✅ All 4 admin tests passed. POST /admin/claim promotes first user to admin (bootstrap), returns 403 when admin already exists. GET /admin/users returns all users with transaction_count field. GET /admin/stats returns all required fields: total_users, total_transactions, total_posts, published_posts, user_growth (6 months). RLS working: Non-admin gets 403 on /admin/users and /admin/stats."
+
   - task: "Auth middleware & RLS (per-user data isolation)"
     implemented: true
     working: true
@@ -276,13 +351,11 @@ frontend:
 metadata:
   created_by: "main_agent"
   version: "1.0"
-  test_sequence: 3
+  test_sequence: 4
   run_ui: false
 
 test_plan:
-  current_focus:
-    - "Goals CRUD dengan projection"
-    - "Import CSV endpoint (preview & commit)"
+  current_focus: []
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
@@ -420,4 +493,80 @@ agent_communication:
       - RLS working perfectly for both endpoints
       
       **Total Backend Tests: 76/76 PASSED (100%)**
+      All backend endpoints production-ready. No critical issues found.  - agent: "testing"
+    message: |
+      ✅ NEW BACKEND FEATURES TESTING COMPLETE - ALL TESTS PASSED (38/38)
+      
+      Comprehensive testing of 5 new backend features completed successfully:
+      
+      **1. RECURRING TRANSACTIONS (10/10 tests passed):**
+      - POST /api/recurring - Creates recurring with all frequencies (daily/weekly/monthly/yearly) ✅
+      - GET /api/recurring - Auto-materialization works correctly:
+        * Monthly recurring starting 2 months ago → created 2 transactions ✅
+        * Daily recurring starting 7 days ago → created 8 transactions ✅
+        * All transactions have tag='recurring' ✅
+      - PUT /api/recurring/[id] - Updates work, setting active=false stops materialization ✅
+      - DELETE /api/recurring/[id] - Removes recurring successfully ✅
+      - Validation: Returns 400 for missing required fields ✅
+      - RLS: User B cannot see User A's recurring ✅
+      
+      **2. DEBTS (9/9 tests passed):**
+      - POST /api/debts - Creates debt (kind=debt) and receivable (kind=receivable) ✅
+      - GET /api/debts - Returns with computed fields:
+        * remaining = amount_total - amount_paid ✅
+        * percent = (amount_paid / amount_total) * 100 ✅
+        * is_paid = (remaining === 0) ✅
+      - POST /api/debts/[id]/pay - Atomic payment tracking:
+        * Pay 3M on 12M debt → remaining=9M, percent=25 ✅
+        * Pay remaining 9M → remaining=0, percent=100, is_paid=true ✅
+      - PUT/DELETE work correctly ✅
+      - Validation: Returns 400 for invalid kind ✅
+      - RLS: User B cannot pay User A's debt (returns 400) ✅
+      
+      **3. REPORTS (4/4 tests passed):**
+      - GET /api/reports/net-worth?months=12:
+        * Returns 12-month series with label, assets, liabilities, net_worth ✅
+        * Assets calculation accurate: 6M (1M initial + 5M income) ✅
+        * Liabilities calculation accurate: 2M (unpaid debt) ✅
+        * Net worth = assets - liabilities = 4M ✅
+      - GET /api/reports/cash-flow?year=YYYY:
+        * Returns 12 months with income/expense/net per month ✅
+        * Current month shows correct income (5M) ✅
+        * Summary totals present (total_income, total_expense, net) ✅
+        * Previous year returns zeros (correct) ✅
+      
+      **4. BLOG CMS (12/12 tests passed):**
+      Public endpoints (no auth required):
+      - GET /api/blog/posts - Returns published posts with pagination + categories list ✅
+      - GET /api/blog/posts/[slug] - Returns single post with reading_time, published_at ✅
+      - Draft posts NOT visible in public list ✅
+      
+      Admin endpoints (role=admin required):
+      - POST /api/admin/claim - First user becomes admin (bootstrap) ✅
+      - POST /api/admin/claim - Returns 403 when admin already exists ✅
+      - POST /api/admin/blog/posts - Creates post with auto-slug generation ✅
+      - GET /api/admin/blog/posts - Shows all posts (draft + published) ✅
+      - PUT /api/admin/blog/posts/[id] - Updates post, publishing draft makes it public ✅
+      - DELETE /api/admin/blog/posts/[id] - Removes post ✅
+      - Validation: Returns 400 for slug conflict ✅
+      - RLS: Non-admin gets 403 on admin endpoints ✅
+      
+      **5. ADMIN ENDPOINTS (4/4 tests passed):**
+      - GET /api/admin/users - Returns all users with transaction_count field ✅
+      - GET /api/admin/stats - Returns all required fields:
+        * total_users, total_transactions, total_posts, published_posts ✅
+        * user_growth array with 6 months of data ✅
+      - RLS: Non-admin gets 403 on /admin/users and /admin/stats ✅
+      - POST /api/admin/claim - Bootstrap flow works correctly ✅
+      
+      **Key Findings:**
+      - All CRUD operations working correctly
+      - Auto-materialization logic for recurring transactions accurate
+      - Computed fields (debts, reports) calculated correctly
+      - RLS working perfectly across all new endpoints
+      - Admin role enforcement working (403 for non-admin)
+      - Blog public/admin separation working correctly
+      - All validation and error handling working as expected
+      
+      **Total Backend Tests: 114/114 PASSED (100%)**
       All backend endpoints production-ready. No critical issues found.

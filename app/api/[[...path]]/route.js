@@ -187,6 +187,39 @@ async function handleRoute(request, { params }) {
       return handleCORS(NextResponse.json({ user: stripId(safe) }))
     }
 
+    // ============ PUBLIC BLOG ENDPOINTS (no auth) ============
+    if (route === '/blog/posts' && method === 'GET') {
+      const url = new URL(request.url)
+      const page = Math.max(1, parseInt(url.searchParams.get('page') || '1'))
+      const perPage = 10
+      const category = url.searchParams.get('category')
+      const search = url.searchParams.get('search')
+      const filter = { status: 'published' }
+      if (category) filter.category = category
+      if (search) filter.title = { $regex: search, $options: 'i' }
+      const total = await db.collection('blog_posts').countDocuments(filter)
+      const posts = await db.collection('blog_posts').find(filter)
+        .sort({ published_at: -1 })
+        .skip((page - 1) * perPage).limit(perPage).toArray()
+      // Also get all unique categories
+      const categories = await db.collection('blog_posts').distinct('category', { status: 'published' })
+      return handleCORS(NextResponse.json({
+        posts: posts.map(stripId), page, perPage, total,
+        totalPages: Math.ceil(total / perPage), categories,
+      }))
+    }
+
+    const publicBlogSlugMatch = route.match(/^\/blog\/posts\/([^/]+)$/)
+    if (publicBlogSlugMatch && method === 'GET') {
+      const slug = publicBlogSlugMatch[1]
+      const post = await db.collection('blog_posts').findOne({ slug, status: 'published' })
+      if (!post) return handleCORS(NextResponse.json({ error: 'Post tidak ditemukan' }, { status: 404 }))
+      const related = await db.collection('blog_posts').find({
+        status: 'published', category: post.category, _id: { $ne: post._id }
+      }).sort({ published_at: -1 }).limit(3).toArray()
+      return handleCORS(NextResponse.json({ post: stripId(post), related: related.map(stripId) }))
+    }
+
     // All routes below require auth
     const auth = getAuthUser(request)
     if (!auth) return unauthorized()
@@ -629,6 +662,374 @@ async function handleRoute(request, { params }) {
       if (!goal) return badRequest('Goal tidak ditemukan')
       await db.collection('goals').updateOne({ _id: id, user_id: userId }, { $inc: { current_amount: amount } })
       return handleCORS(NextResponse.json({ ok: true, current_amount: (goal.current_amount || 0) + amount }))
+    }
+
+    // ============ RECURRING TRANSACTIONS ============
+    // Schema: { _id, user_id, name, type, amount, account_id, category_id, frequency (daily|weekly|monthly|yearly), start_date, next_date, end_date?, active, created_at }
+    const advanceDate = (date, frequency) => {
+      const d = new Date(date)
+      if (frequency === 'daily') d.setDate(d.getDate() + 1)
+      else if (frequency === 'weekly') d.setDate(d.getDate() + 7)
+      else if (frequency === 'monthly') d.setMonth(d.getMonth() + 1)
+      else if (frequency === 'yearly') d.setFullYear(d.getFullYear() + 1)
+      return d
+    }
+
+    const materializeRecurring = async () => {
+      const now = new Date()
+      const dueList = await db.collection('recurring').find({
+        user_id: userId, active: true, next_date: { $lte: now }
+      }).toArray()
+      for (const r of dueList) {
+        let next = new Date(r.next_date)
+        const created = []
+        // safety limit: max 60 generations per call to avoid runaway
+        let count = 0
+        while (next <= now && count < 60) {
+          if (r.end_date && next > new Date(r.end_date)) break
+          created.push({
+            _id: uuidv4(),
+            user_id: userId,
+            type: r.type,
+            amount: r.amount,
+            account_id: r.account_id,
+            category_id: r.category_id,
+            transfer_to_account_id: null,
+            date: new Date(next),
+            note: r.note || `Recurring: ${r.name}`,
+            tags: ['recurring'],
+            recurring_id: r._id,
+            created_at: new Date(),
+          })
+          next = advanceDate(next, r.frequency)
+          count++
+        }
+        if (created.length > 0) await db.collection('transactions').insertMany(created)
+        const shouldDeactivate = r.end_date && next > new Date(r.end_date)
+        await db.collection('recurring').updateOne(
+          { _id: r._id },
+          { $set: { next_date: next, ...(shouldDeactivate ? { active: false } : {}) } }
+        )
+      }
+    }
+
+    if (route === '/recurring' && method === 'GET') {
+      await materializeRecurring()
+      const items = await db.collection('recurring').find({ user_id: userId }).sort({ created_at: -1 }).toArray()
+      return handleCORS(NextResponse.json({ recurring: items.map(stripId) }))
+    }
+    if (route === '/recurring' && method === 'POST') {
+      const body = await request.json()
+      const { name, type, amount, account_id, category_id, frequency, start_date, end_date, note } = body || {}
+      if (!name || !type || !amount || !account_id || !category_id || !frequency || !start_date) return badRequest('Field wajib tidak lengkap')
+      if (!['daily', 'weekly', 'monthly', 'yearly'].includes(frequency)) return badRequest('frequency invalid')
+      if (!['income', 'expense'].includes(type)) return badRequest('type invalid')
+      const r = {
+        _id: uuidv4(), user_id: userId, name, type, amount: Number(amount),
+        account_id, category_id, frequency,
+        start_date: new Date(start_date), next_date: new Date(start_date),
+        end_date: end_date ? new Date(end_date) : null,
+        note: note || '', active: true, created_at: new Date(),
+      }
+      await db.collection('recurring').insertOne(r)
+      // materialize immediately if start_date <= today
+      await materializeRecurring()
+      return handleCORS(NextResponse.json({ recurring: stripId(r) }))
+    }
+    const recMatch = route.match(/^\/recurring\/([^/]+)$/)
+    if (recMatch) {
+      const id = recMatch[1]
+      if (method === 'PUT') {
+        const body = await request.json()
+        const update = {}
+        ;['name', 'type', 'account_id', 'category_id', 'frequency', 'note', 'active'].forEach((k) => {
+          if (body[k] !== undefined) update[k] = body[k]
+        })
+        if (body.amount !== undefined) update.amount = Number(body.amount)
+        if (body.end_date !== undefined) update.end_date = body.end_date ? new Date(body.end_date) : null
+        await db.collection('recurring').updateOne({ _id: id, user_id: userId }, { $set: update })
+        return handleCORS(NextResponse.json({ ok: true }))
+      }
+      if (method === 'DELETE') {
+        await db.collection('recurring').deleteOne({ _id: id, user_id: userId })
+        return handleCORS(NextResponse.json({ ok: true }))
+      }
+    }
+
+    // ============ DEBTS (Utang & Piutang) ============
+    // Schema: { _id, user_id, kind (debt|receivable), name, party_name, amount_total, amount_paid, due_date?, interest_rate?, note, created_at }
+    if (route === '/debts' && method === 'GET') {
+      const items = await db.collection('debts').find({ user_id: userId }).sort({ created_at: -1 }).toArray()
+      const enriched = items.map((d) => {
+        const remaining = Math.max(0, (d.amount_total || 0) - (d.amount_paid || 0))
+        const percent = d.amount_total > 0 ? Math.min(100, Math.round((d.amount_paid / d.amount_total) * 100)) : 0
+        return { ...stripId(d), remaining, percent, is_paid: remaining === 0 }
+      })
+      return handleCORS(NextResponse.json({ debts: enriched }))
+    }
+    if (route === '/debts' && method === 'POST') {
+      const body = await request.json()
+      const { kind, name, party_name, amount_total, amount_paid, due_date, interest_rate, note } = body || {}
+      if (!kind || !name || !amount_total) return badRequest('kind, name, amount_total wajib diisi')
+      if (!['debt', 'receivable'].includes(kind)) return badRequest('kind invalid')
+      const d = {
+        _id: uuidv4(), user_id: userId, kind, name,
+        party_name: party_name || '',
+        amount_total: Number(amount_total),
+        amount_paid: Number(amount_paid) || 0,
+        due_date: due_date ? new Date(due_date) : null,
+        interest_rate: interest_rate ? Number(interest_rate) : null,
+        note: note || '', created_at: new Date(),
+      }
+      await db.collection('debts').insertOne(d)
+      return handleCORS(NextResponse.json({ debt: stripId(d) }))
+    }
+    const debtMatch = route.match(/^\/debts\/([^/]+)$/)
+    if (debtMatch) {
+      const id = debtMatch[1]
+      if (method === 'PUT') {
+        const body = await request.json()
+        const update = {}
+        ;['kind', 'name', 'party_name', 'note'].forEach((k) => { if (body[k] !== undefined) update[k] = body[k] })
+        if (body.amount_total !== undefined) update.amount_total = Number(body.amount_total)
+        if (body.amount_paid !== undefined) update.amount_paid = Number(body.amount_paid)
+        if (body.due_date !== undefined) update.due_date = body.due_date ? new Date(body.due_date) : null
+        if (body.interest_rate !== undefined) update.interest_rate = body.interest_rate ? Number(body.interest_rate) : null
+        await db.collection('debts').updateOne({ _id: id, user_id: userId }, { $set: update })
+        return handleCORS(NextResponse.json({ ok: true }))
+      }
+      if (method === 'DELETE') {
+        await db.collection('debts').deleteOne({ _id: id, user_id: userId })
+        return handleCORS(NextResponse.json({ ok: true }))
+      }
+    }
+    const debtPayMatch = route.match(/^\/debts\/([^/]+)\/pay$/)
+    if (debtPayMatch && method === 'POST') {
+      const id = debtPayMatch[1]
+      const body = await request.json()
+      const amount = Number(body.amount)
+      if (!amount || amount <= 0) return badRequest('amount wajib > 0')
+      const d = await db.collection('debts').findOne({ _id: id, user_id: userId })
+      if (!d) return badRequest('Tidak ditemukan')
+      await db.collection('debts').updateOne({ _id: id, user_id: userId }, { $inc: { amount_paid: amount } })
+      return handleCORS(NextResponse.json({ ok: true, amount_paid: (d.amount_paid || 0) + amount }))
+    }
+
+    // ============ REPORTS ============
+    // GET /api/reports/net-worth?months=12
+    if (route === '/reports/net-worth' && method === 'GET') {
+      const url = new URL(request.url)
+      const months = Math.min(parseInt(url.searchParams.get('months') || '12'), 24)
+      const now = new Date()
+      const accounts = await db.collection('accounts').find({ user_id: userId }).toArray()
+      const debts = await db.collection('debts').find({ user_id: userId, kind: 'debt' }).toArray()
+      // Compute for each month-end going back
+      const result = []
+      for (let i = months - 1; i >= 0; i--) {
+        const endDate = new Date(now.getFullYear(), now.getMonth() - i + 1, 0, 23, 59, 59, 999)
+        // assets = sum of account initial_balance + sum of income/transferIn - expense/transferOut where date <= endDate
+        const trxAgg = await db.collection('transactions').aggregate([
+          { $match: { user_id: userId, date: { $lte: endDate } } },
+          {
+            $group: {
+              _id: '$account_id',
+              income: { $sum: { $cond: [{ $eq: ['$type', 'income'] }, '$amount', 0] } },
+              expense: { $sum: { $cond: [{ $eq: ['$type', 'expense'] }, '$amount', 0] } },
+              transferOut: { $sum: { $cond: [{ $eq: ['$type', 'transfer'] }, '$amount', 0] } },
+            },
+          },
+        ]).toArray()
+        const transferInAgg = await db.collection('transactions').aggregate([
+          { $match: { user_id: userId, date: { $lte: endDate }, type: 'transfer' } },
+          { $group: { _id: '$transfer_to_account_id', transferIn: { $sum: '$amount' } } },
+        ]).toArray()
+        const trxMap = Object.fromEntries(trxAgg.map((r) => [r._id, r]))
+        const trxInMap = Object.fromEntries(transferInAgg.map((r) => [r._id, r.transferIn]))
+        let assets = 0
+        for (const a of accounts) {
+          if (new Date(a.created_at) > endDate) continue
+          const t = trxMap[a._id] || { income: 0, expense: 0, transferOut: 0 }
+          const ti = trxInMap[a._id] || 0
+          assets += (a.initial_balance || 0) + t.income - t.expense - t.transferOut + ti
+        }
+        // liabilities = sum of unpaid debts existing at endDate (approx: created_at <= endDate)
+        const liabilities = debts
+          .filter((d) => new Date(d.created_at) <= endDate)
+          .reduce((s, d) => s + Math.max(0, (d.amount_total || 0) - (d.amount_paid || 0)), 0)
+        result.push({
+          label: endDate.toLocaleDateString('id-ID', { month: 'short', year: '2-digit' }),
+          assets, liabilities, net_worth: assets - liabilities,
+        })
+      }
+      return handleCORS(NextResponse.json({ series: result }))
+    }
+
+    // GET /api/reports/cash-flow?year=2025
+    if (route === '/reports/cash-flow' && method === 'GET') {
+      const url = new URL(request.url)
+      const year = parseInt(url.searchParams.get('year') || String(new Date().getFullYear()))
+      const start = new Date(year, 0, 1)
+      const end = new Date(year, 11, 31, 23, 59, 59, 999)
+      const agg = await db.collection('transactions').aggregate([
+        { $match: { user_id: userId, date: { $gte: start, $lte: end }, type: { $in: ['income', 'expense'] } } },
+        {
+          $group: {
+            _id: { m: { $month: '$date' }, t: '$type' },
+            total: { $sum: '$amount' },
+          },
+        },
+      ]).toArray()
+      const months = []
+      for (let m = 1; m <= 12; m++) {
+        const label = new Date(year, m - 1, 1).toLocaleDateString('id-ID', { month: 'short' })
+        months.push({ month: m, label, income: 0, expense: 0, net: 0 })
+      }
+      agg.forEach((r) => {
+        const idx = r._id.m - 1
+        months[idx][r._id.t] = r.total
+      })
+      months.forEach((mo) => { mo.net = mo.income - mo.expense })
+      const totalIncome = months.reduce((s, m) => s + m.income, 0)
+      const totalExpense = months.reduce((s, m) => s + m.expense, 0)
+      return handleCORS(NextResponse.json({
+        year, months,
+        summary: { total_income: totalIncome, total_expense: totalExpense, net: totalIncome - totalExpense },
+      }))
+    }
+
+    // ============ ADMIN ============
+    const isAdmin = auth.role === 'admin'
+    // Claim admin: if no admin exists yet, promote current user (bootstrap)
+    if (route === '/admin/claim' && method === 'POST') {
+      const existingAdmin = await db.collection('users').findOne({ role: 'admin' })
+      if (existingAdmin && existingAdmin._id !== userId) {
+        return handleCORS(NextResponse.json({ error: 'Admin sudah ada' }, { status: 403 }))
+      }
+      await db.collection('users').updateOne({ _id: userId }, { $set: { role: 'admin' } })
+      const user = await db.collection('users').findOne({ _id: userId })
+      const { password_hash: _, ...safe } = user
+      const token = signToken(user)
+      return handleCORS(NextResponse.json({ ok: true, token, user: stripId(safe) }))
+    }
+
+    if (!isAdmin && route.startsWith('/admin')) {
+      return handleCORS(NextResponse.json({ error: 'Admin only' }, { status: 403 }))
+    }
+
+    // Admin: list all posts (incl. drafts)
+    if (route === '/admin/blog/posts' && method === 'GET') {
+      const posts = await db.collection('blog_posts').find({}).sort({ created_at: -1 }).toArray()
+      return handleCORS(NextResponse.json({ posts: posts.map(stripId) }))
+    }
+    if (route === '/admin/blog/posts' && method === 'POST') {
+      const body = await request.json()
+      const { title, slug, excerpt, meta_title, meta_description, og_image, cover_image, content, category, tags, status } = body || {}
+      if (!title || !content) return badRequest('title & content wajib diisi')
+      const generateSlug = (s) => s.toLowerCase().trim().replace(/[^a-z0-9\s-]/g, '').replace(/\s+/g, '-').slice(0, 80)
+      const finalSlug = slug ? generateSlug(slug) : generateSlug(title)
+      // ensure unique
+      const dup = await db.collection('blog_posts').findOne({ slug: finalSlug })
+      if (dup) return badRequest('Slug sudah dipakai, gunakan slug lain')
+      const wordCount = String(content).split(/\s+/).length
+      const readingTime = Math.max(1, Math.round(wordCount / 200))
+      const user = await db.collection('users').findOne({ _id: userId })
+      const post = {
+        _id: uuidv4(),
+        title, slug: finalSlug,
+        excerpt: excerpt || String(content).replace(/<[^>]*>/g, '').slice(0, 180) + '...',
+        meta_title: meta_title || title,
+        meta_description: meta_description || excerpt || '',
+        og_image: og_image || cover_image || null,
+        cover_image: cover_image || null,
+        content, category: category || 'Umum',
+        tags: Array.isArray(tags) ? tags : [],
+        status: status || 'draft',
+        author_id: userId, author_name: user?.name || 'Admin',
+        reading_time_minutes: readingTime,
+        published_at: status === 'published' ? new Date() : null,
+        created_at: new Date(), updated_at: new Date(),
+      }
+      await db.collection('blog_posts').insertOne(post)
+      return handleCORS(NextResponse.json({ post: stripId(post) }))
+    }
+    const adminPostMatch = route.match(/^\/admin\/blog\/posts\/([^/]+)$/)
+    if (adminPostMatch) {
+      const id = adminPostMatch[1]
+      if (method === 'GET') {
+        const post = await db.collection('blog_posts').findOne({ _id: id })
+        if (!post) return handleCORS(NextResponse.json({ error: 'Not found' }, { status: 404 }))
+        return handleCORS(NextResponse.json({ post: stripId(post) }))
+      }
+      if (method === 'PUT') {
+        const body = await request.json()
+        const update = { updated_at: new Date() }
+        ;['title', 'excerpt', 'meta_title', 'meta_description', 'og_image', 'cover_image', 'content', 'category'].forEach((k) => {
+          if (body[k] !== undefined) update[k] = body[k]
+        })
+        if (body.tags !== undefined) update.tags = Array.isArray(body.tags) ? body.tags : []
+        if (body.slug !== undefined) update.slug = body.slug.toLowerCase().trim().replace(/[^a-z0-9\s-]/g, '').replace(/\s+/g, '-')
+        if (body.status !== undefined) {
+          update.status = body.status
+          if (body.status === 'published') {
+            const existing = await db.collection('blog_posts').findOne({ _id: id })
+            if (existing && !existing.published_at) update.published_at = new Date()
+          }
+        }
+        if (body.content !== undefined) {
+          const wc = String(body.content).split(/\s+/).length
+          update.reading_time_minutes = Math.max(1, Math.round(wc / 200))
+        }
+        await db.collection('blog_posts').updateOne({ _id: id }, { $set: update })
+        return handleCORS(NextResponse.json({ ok: true }))
+      }
+      if (method === 'DELETE') {
+        await db.collection('blog_posts').deleteOne({ _id: id })
+        return handleCORS(NextResponse.json({ ok: true }))
+      }
+    }
+
+    // Admin: users list
+    if (route === '/admin/users' && method === 'GET') {
+      const users = await db.collection('users').find({}).sort({ created_at: -1 }).toArray()
+      // Get metadata: transaction counts
+      const enriched = await Promise.all(users.map(async (u) => {
+        const trxCount = await db.collection('transactions').countDocuments({ user_id: u._id })
+        const { password_hash: _, ...safe } = u
+        return { ...stripId(safe), transaction_count: trxCount }
+      }))
+      return handleCORS(NextResponse.json({ users: enriched }))
+    }
+
+    // Admin dashboard stats
+    if (route === '/admin/stats' && method === 'GET') {
+      const [totalUsers, totalTransactions, totalPosts, publishedPosts] = await Promise.all([
+        db.collection('users').countDocuments({}),
+        db.collection('transactions').countDocuments({}),
+        db.collection('blog_posts').countDocuments({}),
+        db.collection('blog_posts').countDocuments({ status: 'published' }),
+      ])
+      // User growth last 6 months
+      const now = new Date()
+      const sixAgo = new Date(now.getFullYear(), now.getMonth() - 5, 1)
+      const growth = await db.collection('users').aggregate([
+        { $match: { created_at: { $gte: sixAgo } } },
+        { $group: { _id: { y: { $year: '$created_at' }, m: { $month: '$created_at' } }, count: { $sum: 1 } } },
+      ]).toArray()
+      const growthMap = {}
+      for (let i = 5; i >= 0; i--) {
+        const d = new Date(now.getFullYear(), now.getMonth() - i, 1)
+        const key = `${d.getFullYear()}-${d.getMonth() + 1}`
+        growthMap[key] = { label: d.toLocaleDateString('id-ID', { month: 'short', year: '2-digit' }), count: 0 }
+      }
+      growth.forEach((g) => {
+        const key = `${g._id.y}-${g._id.m}`
+        if (growthMap[key]) growthMap[key].count = g.count
+      })
+      return handleCORS(NextResponse.json({
+        total_users: totalUsers, total_transactions: totalTransactions,
+        total_posts: totalPosts, published_posts: publishedPosts,
+        user_growth: Object.values(growthMap),
+      }))
     }
 
     // ============ DASHBOARD SUMMARY ============
