@@ -73,6 +73,14 @@ const DEFAULT_CATEGORIES = [
   { name: 'Lainnya (Pengeluaran)', type: 'expense', icon: '📝', color: '#6b7280' },
 ]
 
+const DEFAULT_EXCHANGE_RATES = {
+  IDR: 1,
+  USD: 16200,
+  SGD: 12000,
+  EUR: 17500,
+}
+const SUPPORTED_CURRENCIES = ['IDR', 'USD', 'SGD', 'EUR']
+
 async function seedDefaultsForUser(db, userId) {
   const cats = DEFAULT_CATEGORIES.map((c) => ({
     _id: uuidv4(),
@@ -155,6 +163,8 @@ async function handleRoute(request, { params }) {
         password_hash,
         role: 'user',
         currency_default: 'IDR',
+        exchange_rates: { ...DEFAULT_EXCHANGE_RATES },
+        onboarded: false,
         payment_status: 'trial',
         created_at: new Date(),
       }
@@ -225,6 +235,43 @@ async function handleRoute(request, { params }) {
     if (!auth) return unauthorized()
     const userId = auth.uid
 
+    // ============ SETTINGS ============
+    if (route === '/settings' && method === 'GET') {
+      const user = await db.collection('users').findOne({ _id: userId })
+      if (!user) return unauthorized()
+      const { password_hash: _, ...safe } = user
+      return handleCORS(NextResponse.json({
+        user: stripId(safe),
+        supported_currencies: SUPPORTED_CURRENCIES,
+        default_exchange_rates: DEFAULT_EXCHANGE_RATES,
+      }))
+    }
+    if (route === '/settings' && method === 'PUT') {
+      const body = await request.json()
+      const update = {}
+      if (body.currency_default && SUPPORTED_CURRENCIES.includes(body.currency_default)) update.currency_default = body.currency_default
+      if (body.exchange_rates && typeof body.exchange_rates === 'object') {
+        const merged = { ...DEFAULT_EXCHANGE_RATES }
+        for (const c of SUPPORTED_CURRENCIES) {
+          if (body.exchange_rates[c] && Number(body.exchange_rates[c]) > 0) merged[c] = Number(body.exchange_rates[c])
+        }
+        merged.IDR = 1 // always base
+        update.exchange_rates = merged
+      }
+      if (body.onboarded !== undefined) update.onboarded = !!body.onboarded
+      if (body.name) update.name = body.name
+      await db.collection('users').updateOne({ _id: userId }, { $set: update })
+      const user = await db.collection('users').findOne({ _id: userId })
+      const { password_hash: _, ...safe } = user
+      return handleCORS(NextResponse.json({ user: stripId(safe) }))
+    }
+    if (route === '/currencies' && method === 'GET') {
+      return handleCORS(NextResponse.json({
+        currencies: SUPPORTED_CURRENCIES,
+        default_rates: DEFAULT_EXCHANGE_RATES,
+      }))
+    }
+
     // ============ ACCOUNTS ============
     if (route === '/accounts' && method === 'GET') {
       const accounts = await db.collection('accounts').find({ user_id: userId }).sort({ created_at: 1 }).toArray()
@@ -239,15 +286,16 @@ async function handleRoute(request, { params }) {
 
     if (route === '/accounts' && method === 'POST') {
       const body = await request.json()
-      const { name, type, initial_balance, icon } = body || {}
+      const { name, type, initial_balance, icon, currency } = body || {}
       if (!name || !type) return badRequest('name & type wajib diisi')
+      const cur = SUPPORTED_CURRENCIES.includes(currency) ? currency : 'IDR'
       const acc = {
         _id: uuidv4(),
         user_id: userId,
         name,
         type, // cash | bank | ewallet | credit_card | investment
         initial_balance: Number(initial_balance) || 0,
-        currency: 'IDR',
+        currency: cur,
         icon: icon || '💳',
         created_at: new Date(),
       }
@@ -262,6 +310,7 @@ async function handleRoute(request, { params }) {
         const body = await request.json()
         const update = {}
         ;['name', 'type', 'icon'].forEach((k) => { if (body[k] !== undefined) update[k] = body[k] })
+        if (body.currency !== undefined && SUPPORTED_CURRENCIES.includes(body.currency)) update.currency = body.currency
         if (body.initial_balance !== undefined) update.initial_balance = Number(body.initial_balance) || 0
         await db.collection('accounts').updateOne({ _id: id, user_id: userId }, { $set: update })
         return handleCORS(NextResponse.json({ ok: true }))
@@ -339,20 +388,36 @@ async function handleRoute(request, { params }) {
 
     if (route === '/transactions' && method === 'POST') {
       const body = await request.json()
-      const { type, amount, account_id, category_id, transfer_to_account_id, date, note, tags } = body || {}
-      if (!type || !amount || !account_id || !date) return badRequest('type, amount, account_id, date wajib diisi')
+      const { type, amount, account_id, category_id, transfer_to_account_id, date, note, tags, splits } = body || {}
+      if (!type || !account_id || !date) return badRequest('type, account_id, date wajib diisi')
       if (!['income', 'expense', 'transfer'].includes(type)) return badRequest('type tidak valid')
       if (type === 'transfer' && !transfer_to_account_id) return badRequest('transfer_to_account_id wajib untuk transfer')
-      if ((type === 'income' || type === 'expense') && !category_id) return badRequest('category_id wajib untuk income/expense')
+
+      // Split validation
+      let finalSplits = null
+      let finalAmount = Number(amount)
+      let finalCategoryId = category_id || null
+      if (Array.isArray(splits) && splits.length > 0 && type !== 'transfer') {
+        finalSplits = splits.filter((s) => s && s.category_id && s.amount).map((s) => ({
+          category_id: s.category_id, amount: Number(s.amount), note: s.note || ''
+        }))
+        if (finalSplits.length < 2) return badRequest('Split minimal 2 kategori')
+        finalAmount = finalSplits.reduce((sum, s) => sum + s.amount, 0)
+        finalCategoryId = null
+      } else {
+        if (!finalAmount || finalAmount <= 0) return badRequest('amount wajib > 0')
+        if ((type === 'income' || type === 'expense') && !category_id) return badRequest('category_id wajib untuk income/expense')
+      }
 
       const trx = {
         _id: uuidv4(),
         user_id: userId,
         type,
-        amount: Number(amount),
+        amount: finalAmount,
         account_id,
-        category_id: category_id || null,
+        category_id: finalCategoryId,
         transfer_to_account_id: transfer_to_account_id || null,
+        splits: finalSplits,
         date: new Date(date),
         note: note || '',
         tags: Array.isArray(tags) ? tags : [],
@@ -1047,67 +1112,104 @@ async function handleRoute(request, { params }) {
       const startOfMonth = new Date(year, month, 1)
       const endOfMonth = new Date(year, month + 1, 0, 23, 59, 59, 999)
 
-      // Accounts total
+      // Load user for currency preference
+      const currentUser = await db.collection('users').findOne({ _id: userId })
+      const defaultCurrency = currentUser?.currency_default || 'IDR'
+      const rates = { ...DEFAULT_EXCHANGE_RATES, ...(currentUser?.exchange_rates || {}) }
+      const convert = (amount, fromCurrency) => {
+        const from = fromCurrency || 'IDR'
+        if (from === defaultCurrency) return amount
+        const inIDR = amount * (rates[from] || 1)
+        return inIDR / (rates[defaultCurrency] || 1)
+      }
+
+      // Accounts total (converted)
       const accounts = await db.collection('accounts').find({ user_id: userId }).toArray()
-      const balances = await Promise.all(accounts.map(async (a) => await computeAccountBalance(db, userId, a._id)))
+      const balances = await Promise.all(accounts.map(async (a) => convert(await computeAccountBalance(db, userId, a._id), a.currency || 'IDR')))
       const totalBalance = balances.reduce((sum, b) => sum + b, 0)
 
-      // This month income/expense
-      const monthAgg = await db.collection('transactions').aggregate([
-        { $match: { user_id: userId, date: { $gte: startOfMonth, $lte: endOfMonth }, type: { $in: ['income', 'expense'] } } },
-        { $group: { _id: '$type', total: { $sum: '$amount' } } },
-      ]).toArray()
+      // This month transactions (handle splits & currency)
+      const accCurrencyMap = Object.fromEntries(accounts.map((a) => [a._id, a.currency || 'IDR']))
+      const monthTrx = await db.collection('transactions').find({
+        user_id: userId, date: { $gte: startOfMonth, $lte: endOfMonth }, type: { $in: ['income', 'expense'] }
+      }).toArray()
       let incomeMonth = 0, expenseMonth = 0
-      monthAgg.forEach((r) => { if (r._id === 'income') incomeMonth = r.total; if (r._id === 'expense') expenseMonth = r.total })
+      const catTotalsMap = {}
+      for (const t of monthTrx) {
+        const cur = accCurrencyMap[t.account_id] || 'IDR'
+        const converted = convert(t.amount, cur)
+        if (t.type === 'income') incomeMonth += converted
+        else {
+          expenseMonth += converted
+          if (Array.isArray(t.splits) && t.splits.length > 0) {
+            for (const s of t.splits) {
+              catTotalsMap[s.category_id] = (catTotalsMap[s.category_id] || 0) + convert(s.amount, cur)
+            }
+          } else if (t.category_id) {
+            catTotalsMap[t.category_id] = (catTotalsMap[t.category_id] || 0) + converted
+          }
+        }
+      }
 
-      // Top expense categories this month
-      const catAgg = await db.collection('transactions').aggregate([
-        { $match: { user_id: userId, date: { $gte: startOfMonth, $lte: endOfMonth }, type: 'expense' } },
-        { $group: { _id: '$category_id', total: { $sum: '$amount' } } },
-        { $sort: { total: -1 } },
-        { $limit: 8 },
-      ]).toArray()
-      const catIds = catAgg.map((c) => c._id).filter(Boolean)
-      const cats = await db.collection('categories').find({ _id: { $in: catIds } }).toArray()
+      const catIds = Object.keys(catTotalsMap)
+      const cats = catIds.length > 0 ? await db.collection('categories').find({ _id: { $in: catIds } }).toArray() : []
       const catMap = Object.fromEntries(cats.map((c) => [c._id, c]))
-      const topCategories = catAgg.map((c) => ({
-        category_id: c._id,
-        name: catMap[c._id]?.name || 'Tanpa kategori',
-        icon: catMap[c._id]?.icon || '📝',
-        color: catMap[c._id]?.color || '#6b7280',
-        total: c.total,
-      }))
+      const topCategories = catIds.map((id) => ({
+        category_id: id,
+        name: catMap[id]?.name || 'Tanpa kategori',
+        icon: catMap[id]?.icon || '📝',
+        color: catMap[id]?.color || '#6b7280',
+        total: catTotalsMap[id],
+      })).sort((a, b) => b.total - a.total).slice(0, 8)
 
       // Trend last 6 months
       const sixAgo = new Date(year, month - 5, 1)
-      const trendAgg = await db.collection('transactions').aggregate([
-        { $match: { user_id: userId, date: { $gte: sixAgo, $lte: endOfMonth }, type: { $in: ['income', 'expense'] } } },
-        { $group: { _id: { y: { $year: '$date' }, m: { $month: '$date' }, t: '$type' }, total: { $sum: '$amount' } } },
-      ]).toArray()
+      const trendTrx = await db.collection('transactions').find({
+        user_id: userId, date: { $gte: sixAgo, $lte: endOfMonth }, type: { $in: ['income', 'expense'] }
+      }).toArray()
       const trendMap = {}
       for (let i = 5; i >= 0; i--) {
         const d = new Date(year, month - i, 1)
         const key = `${d.getFullYear()}-${d.getMonth() + 1}`
         trendMap[key] = { label: d.toLocaleDateString('id-ID', { month: 'short', year: '2-digit' }), income: 0, expense: 0 }
       }
-      trendAgg.forEach((r) => {
-        const key = `${r._id.y}-${r._id.m}`
-        if (trendMap[key]) trendMap[key][r._id.t] = r.total
-      })
+      for (const t of trendTrx) {
+        const cur = accCurrencyMap[t.account_id] || 'IDR'
+        const conv = convert(t.amount, cur)
+        const td = new Date(t.date)
+        const key = `${td.getFullYear()}-${td.getMonth() + 1}`
+        if (trendMap[key]) trendMap[key][t.type] += conv
+      }
       const trend = Object.values(trendMap)
+
+      // Budget alerts (>=80% for current month)
+      const currentMonthKey = `${year}-${String(month + 1).padStart(2, '0')}`
+      const monthBudgets = await db.collection('budgets').find({ user_id: userId, month: currentMonthKey }).toArray()
+      const budget_alerts = []
+      for (const b of monthBudgets) {
+        const spent = catTotalsMap[b.category_id] || 0
+        const percent = b.amount > 0 ? Math.round((spent / b.amount) * 100) : 0
+        if (percent >= 80) {
+          const cat = await db.collection('categories').findOne({ _id: b.category_id })
+          budget_alerts.push({
+            budget_id: b._id, category_id: b.category_id,
+            category_name: cat?.name || 'Kategori', category_icon: cat?.icon || '📝',
+            amount: b.amount, spent, percent,
+            status: percent >= 100 ? 'over' : 'warning',
+          })
+        }
+      }
+      budget_alerts.sort((a, b) => b.percent - a.percent)
 
       // Recent transactions
       const recent = await db.collection('transactions').find({ user_id: userId }).sort({ date: -1, created_at: -1 }).limit(5).toArray()
 
       return handleCORS(NextResponse.json({
-        totalBalance,
-        incomeMonth,
-        expenseMonth,
-        netMonth: incomeMonth - expenseMonth,
-        topCategories,
-        trend,
-        recentTransactions: recent.map(stripId),
+        totalBalance, incomeMonth, expenseMonth, netMonth: incomeMonth - expenseMonth,
+        topCategories, trend, recentTransactions: recent.map(stripId),
         accountsCount: accounts.length,
+        default_currency: defaultCurrency, exchange_rates: rates,
+        budget_alerts,
       }))
     }
 

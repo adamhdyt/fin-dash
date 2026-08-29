@@ -12,14 +12,14 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Textarea } from '@/components/ui/textarea'
 import { Badge } from '@/components/ui/badge'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import { apiFetch, getToken, getUser, clearAuth, formatIDR, formatDate, ACCOUNT_TYPES } from '@/lib/api'
+import { apiFetch, getToken, getUser, setAuth, clearAuth, formatIDR, formatDate, formatMoney, ACCOUNT_TYPES, SUPPORTED_CURRENCIES, CURRENCY_SYMBOLS } from '@/lib/api'
 import { toast } from 'sonner'
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend, CartesianGrid, BarChart, Bar } from 'recharts'
 import {
   Wallet, TrendingUp, TrendingDown, PlusCircle, LogOut, LayoutDashboard, ArrowLeftRight,
   Tag, Download, Trash2, Edit2, ArrowUpCircle, ArrowDownCircle, Loader2, Search, Menu, X,
   Target, AlertTriangle, CheckCircle2, Upload, FileText, Trophy, Plus,
-  Repeat, HandCoins, BarChart3, Shield, Calendar
+  Repeat, HandCoins, BarChart3, Shield, Calendar, Settings, Sparkles
 } from 'lucide-react'
 
 export default function DashboardPage() {
@@ -28,6 +28,7 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true)
   const [tab, setTab] = useState('overview')
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [showOnboarding, setShowOnboarding] = useState(false)
 
   // Data
   const [summary, setSummary] = useState(null)
@@ -49,7 +50,9 @@ export default function DashboardPage() {
       router.replace('/login')
       return
     }
-    setUser(getUser())
+    const u = getUser()
+    setUser(u)
+    if (u && !u.onboarded) setShowOnboarding(true)
     loadAll()
   }, [])
 
@@ -125,6 +128,7 @@ export default function DashboardPage() {
     { id: 'categories', label: 'Kategori', icon: Tag },
     { id: 'import', label: 'Import CSV', icon: Upload },
     { id: 'export', label: 'Export Data', icon: Download },
+    { id: 'settings', label: 'Pengaturan', icon: Settings },
     ...(user.role === 'admin' ? [{ id: '__admin_link', label: 'Admin Panel', icon: Shield, href: '/admin' }] : []),
   ]
 
@@ -238,6 +242,7 @@ export default function DashboardPage() {
           )}
           {tab === 'export' && <ExportTab onExport={handleExport} accounts={accounts} />}
           {tab === 'import' && <ImportTab accounts={accounts} categories={categories} onImported={loadAll} />}
+          {tab === 'settings' && <SettingsTab user={user} onUpdate={(u) => setUser(u)} />}
         </div>
       </main>
 
@@ -254,6 +259,10 @@ export default function DashboardPage() {
         state={catDialog} setState={setCatDialog}
         onSaved={async () => { const c = await apiFetch('/categories'); setCategories(c.categories) }}
       />
+      <OnboardingWizard
+        open={showOnboarding} setOpen={setShowOnboarding} user={user}
+        onDone={async (updatedUser) => { setUser(updatedUser); setAuth(getToken(), updatedUser); await loadAll() }}
+      />
     </div>
   )
 }
@@ -264,14 +273,45 @@ function OverviewTab({ summary, accounts, onAddTrx, categories }) {
   const trend = summary.trend || []
   const topCats = summary.topCategories || []
   const catMap = Object.fromEntries((categories || []).map((c) => [c.id, c]))
+  const defaultCurrency = summary.default_currency || 'IDR'
+  const alerts = summary.budget_alerts || []
 
   return (
     <div className="space-y-6">
+      {alerts.length > 0 && (
+        <Card className={`border-2 ${alerts.some((a) => a.status === 'over') ? 'border-rose-400 bg-rose-50 dark:bg-rose-950/30' : 'border-amber-400 bg-amber-50 dark:bg-amber-950/30'}`}>
+          <CardContent className="p-4">
+            <div className="flex items-start gap-3">
+              <AlertTriangle className={`h-5 w-5 flex-shrink-0 mt-0.5 ${alerts.some((a) => a.status === 'over') ? 'text-rose-600' : 'text-amber-600'}`} />
+              <div className="flex-1 min-w-0">
+                <p className="font-semibold text-sm mb-2">
+                  {alerts.some((a) => a.status === 'over') ? '⚠️ Anda melebihi budget!' : '⚡ Waspada: Beberapa budget hampir habis'}
+                </p>
+                <div className="space-y-1.5">
+                  {alerts.slice(0, 5).map((a) => (
+                    <div key={a.budget_id} className="flex items-center justify-between text-sm gap-3">
+                      <span className="flex items-center gap-2 min-w-0">
+                        <span>{a.category_icon}</span>
+                        <span className="truncate">{a.category_name}</span>
+                      </span>
+                      <span className="flex items-center gap-2 flex-shrink-0">
+                        <span className="text-xs text-muted-foreground tabular-nums">{formatMoney(a.spent, defaultCurrency)} / {formatMoney(a.amount, defaultCurrency)}</span>
+                        <span className={`font-bold text-sm tabular-nums ${a.status === 'over' ? 'text-rose-600' : 'text-amber-600'}`}>{a.percent}%</span>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatCard title="Total Saldo" value={formatIDR(summary.totalBalance)} icon={Wallet} accent="emerald" />
-        <StatCard title="Pemasukan Bulan Ini" value={formatIDR(summary.incomeMonth)} icon={TrendingUp} accent="blue" />
-        <StatCard title="Pengeluaran Bulan Ini" value={formatIDR(summary.expenseMonth)} icon={TrendingDown} accent="rose" />
-        <StatCard title="Cash Flow Bulan Ini" value={formatIDR(summary.netMonth)} icon={ArrowLeftRight} accent={summary.netMonth >= 0 ? 'emerald' : 'rose'} />
+        <StatCard title={`Total Saldo (${defaultCurrency})`} value={formatMoney(summary.totalBalance, defaultCurrency)} icon={Wallet} accent="emerald" />
+        <StatCard title="Pemasukan Bulan Ini" value={formatMoney(summary.incomeMonth, defaultCurrency)} icon={TrendingUp} accent="blue" />
+        <StatCard title="Pengeluaran Bulan Ini" value={formatMoney(summary.expenseMonth, defaultCurrency)} icon={TrendingDown} accent="rose" />
+        <StatCard title="Cash Flow Bulan Ini" value={formatMoney(summary.netMonth, defaultCurrency)} icon={ArrowLeftRight} accent={summary.netMonth >= 0 ? 'emerald' : 'rose'} />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -350,7 +390,7 @@ function OverviewTab({ summary, accounts, onAddTrx, categories }) {
                     <p className="text-xs text-muted-foreground capitalize">{ACCOUNT_TYPES.find((t) => t.value === a.type)?.label || a.type}</p>
                   </div>
                 </div>
-                <p className={`font-bold tabular-nums text-sm ${a.balance >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>{formatIDR(a.balance)}</p>
+                <p className={`font-bold tabular-nums text-sm ${a.balance >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>{formatMoney(a.balance, a.currency || 'IDR')}</p>
               </div>
             ))}
           </div>
@@ -488,9 +528,9 @@ function AccountsTab({ accounts, onAdd, onEdit, onDelete }) {
                   <Button variant="ghost" size="icon" className="h-8 w-8 text-rose-600" onClick={() => onDelete(a.id)}><Trash2 className="h-3.5 w-3.5" /></Button>
                 </div>
               </div>
-              <p className="text-xs text-muted-foreground">Saldo saat ini</p>
-              <p className={`text-2xl font-bold tabular-nums ${a.balance >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>{formatIDR(a.balance)}</p>
-              {a.initial_balance !== 0 && <p className="text-xs text-muted-foreground mt-1">Saldo awal: {formatIDR(a.initial_balance)}</p>}
+              <p className="text-xs text-muted-foreground">Saldo saat ini <span className="text-emerald-600 font-medium">({a.currency || 'IDR'})</span></p>
+              <p className={`text-2xl font-bold tabular-nums ${a.balance >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>{formatMoney(a.balance, a.currency || 'IDR')}</p>
+              {a.initial_balance !== 0 && <p className="text-xs text-muted-foreground mt-1">Saldo awal: {formatMoney(a.initial_balance, a.currency || 'IDR')}</p>}
             </CardContent>
           </Card>
         ))}
@@ -813,46 +853,66 @@ function TransactionDialog({ state, setState, accounts, categories, onSaved }) {
   const [form, setForm] = useState({
     type: 'expense', amount: '', account_id: '', category_id: '', transfer_to_account_id: '',
     date: new Date().toISOString().slice(0, 10), note: '', tags: '',
+    isSplit: false, splits: [{ category_id: '', amount: '' }, { category_id: '', amount: '' }],
   })
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
     if (state.open) {
       if (editing) {
+        const hasSplits = Array.isArray(editing.splits) && editing.splits.length > 0
         setForm({
           type: editing.type, amount: String(editing.amount),
           account_id: editing.account_id, category_id: editing.category_id || '',
           transfer_to_account_id: editing.transfer_to_account_id || '',
           date: new Date(editing.date).toISOString().slice(0, 10),
           note: editing.note || '', tags: (editing.tags || []).join(', '),
+          isSplit: hasSplits,
+          splits: hasSplits ? editing.splits.map((s) => ({ category_id: s.category_id, amount: String(s.amount) })) : [{ category_id: '', amount: '' }, { category_id: '', amount: '' }],
         })
       } else {
         setForm({
           type: 'expense', amount: '', account_id: accounts[0]?.id || '', category_id: '',
           transfer_to_account_id: '', date: new Date().toISOString().slice(0, 10), note: '', tags: '',
+          isSplit: false, splits: [{ category_id: '', amount: '' }, { category_id: '', amount: '' }],
         })
       }
     }
   }, [state.open, editing, accounts])
 
   const catsForType = categories.filter((c) => c.type === form.type)
+  const selectedAcc = accounts.find((a) => a.id === form.account_id)
+  const currency = selectedAcc?.currency || 'IDR'
+  const splitSum = form.splits.reduce((s, x) => s + (Number(x.amount) || 0), 0)
 
   const save = async () => {
-    if (!form.amount || Number(form.amount) <= 0) return toast.error('Jumlah harus lebih dari 0')
-    if (!form.account_id) return toast.error('Pilih akun')
-    if (form.type !== 'transfer' && !form.category_id) return toast.error('Pilih kategori')
-    if (form.type === 'transfer' && !form.transfer_to_account_id) return toast.error('Pilih akun tujuan')
-    if (form.type === 'transfer' && form.account_id === form.transfer_to_account_id) return toast.error('Akun asal & tujuan tidak boleh sama')
+    if (!form.account_id) return toast.error('Pilih kantong')
+    if (form.type === 'transfer' && !form.transfer_to_account_id) return toast.error('Pilih kantong tujuan')
+    if (form.type === 'transfer' && form.account_id === form.transfer_to_account_id) return toast.error('Kantong asal & tujuan tidak boleh sama')
 
-    setSaving(true)
-    try {
-      const payload = {
+    let payload
+    if (form.isSplit && form.type !== 'transfer') {
+      const validSplits = form.splits.filter((s) => s.category_id && Number(s.amount) > 0)
+      if (validSplits.length < 2) return toast.error('Split minimal 2 kategori dengan jumlah > 0')
+      payload = {
+        type: form.type, account_id: form.account_id, date: form.date, note: form.note,
+        splits: validSplits.map((s) => ({ category_id: s.category_id, amount: Number(s.amount) })),
+        tags: form.tags.split(',').map((t) => t.trim()).filter(Boolean),
+      }
+    } else {
+      if (!form.amount || Number(form.amount) <= 0) return toast.error('Jumlah harus > 0')
+      if (form.type !== 'transfer' && !form.category_id) return toast.error('Pilih kategori')
+      payload = {
         type: form.type, amount: Number(form.amount), account_id: form.account_id,
         category_id: form.type === 'transfer' ? null : form.category_id,
         transfer_to_account_id: form.type === 'transfer' ? form.transfer_to_account_id : null,
         date: form.date, note: form.note,
         tags: form.tags.split(',').map((t) => t.trim()).filter(Boolean),
       }
+    }
+
+    setSaving(true)
+    try {
       if (editing) {
         await apiFetch(`/transactions/${editing.id}`, { method: 'PUT', body: JSON.stringify(payload) })
         toast.success('Transaksi diperbarui')
@@ -879,7 +939,7 @@ function TransactionDialog({ state, setState, accounts, categories, onSaved }) {
               { v: 'income', l: 'Pemasukan', c: 'emerald' },
               { v: 'transfer', l: 'Transfer', c: 'blue' },
             ].map((t) => (
-              <button key={t.v} type="button" onClick={() => setForm({ ...form, type: t.v, category_id: '' })}
+              <button key={t.v} type="button" onClick={() => setForm({ ...form, type: t.v, category_id: '', isSplit: false })}
                 className={`px-3 py-2 rounded-lg text-sm font-medium border transition ${form.type === t.v ? `bg-${t.c}-600 text-white border-${t.c}-600` : 'bg-background hover:bg-muted'}`}
                 style={form.type === t.v ? { backgroundColor: t.c === 'rose' ? '#e11d48' : t.c === 'emerald' ? '#059669' : '#2563eb', color: 'white', borderColor: 'transparent' } : {}}>
                 {t.l}
@@ -888,16 +948,11 @@ function TransactionDialog({ state, setState, accounts, categories, onSaved }) {
           </div>
 
           <div className="space-y-2">
-            <Label>Jumlah (IDR)</Label>
-            <Input type="number" min="0" step="1000" placeholder="0" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} className="text-lg font-semibold" />
-          </div>
-
-          <div className="space-y-2">
             <Label>{form.type === 'transfer' ? 'Dari kantong' : 'Kantong'}</Label>
             <Select value={form.account_id} onValueChange={(v) => setForm({ ...form, account_id: v })}>
               <SelectTrigger><SelectValue placeholder="Pilih kantong" /></SelectTrigger>
               <SelectContent>
-                {accounts.map((a) => <SelectItem key={a.id} value={a.id}>{a.icon} {a.name}</SelectItem>)}
+                {accounts.map((a) => <SelectItem key={a.id} value={a.id}>{a.icon} {a.name} ({a.currency || 'IDR'})</SelectItem>)}
               </SelectContent>
             </Select>
           </div>
@@ -913,14 +968,59 @@ function TransactionDialog({ state, setState, accounts, categories, onSaved }) {
               </Select>
             </div>
           ) : (
+            <div className="flex items-center gap-2 pt-1">
+              <input type="checkbox" id="isSplit" checked={form.isSplit} onChange={(e) => setForm({ ...form, isSplit: e.target.checked })} />
+              <Label htmlFor="isSplit" className="cursor-pointer text-sm">Split ke beberapa kategori</Label>
+            </div>
+          )}
+
+          {!form.isSplit ? (
+            <>
+              <div className="space-y-2">
+                <Label>Jumlah ({currency})</Label>
+                <Input type="number" min="0" step={currency === 'IDR' ? '1000' : '0.01'} placeholder="0" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} className="text-lg font-semibold" />
+              </div>
+              {form.type !== 'transfer' && (
+                <div className="space-y-2">
+                  <Label>Kategori</Label>
+                  <Select value={form.category_id} onValueChange={(v) => setForm({ ...form, category_id: v })}>
+                    <SelectTrigger><SelectValue placeholder="Pilih kategori" /></SelectTrigger>
+                    <SelectContent>
+                      {catsForType.map((c) => <SelectItem key={c.id} value={c.id}>{c.icon} {c.name}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+            </>
+          ) : (
             <div className="space-y-2">
-              <Label>Kategori</Label>
-              <Select value={form.category_id} onValueChange={(v) => setForm({ ...form, category_id: v })}>
-                <SelectTrigger><SelectValue placeholder="Pilih kategori" /></SelectTrigger>
-                <SelectContent>
-                  {catsForType.map((c) => <SelectItem key={c.id} value={c.id}>{c.icon} {c.name}</SelectItem>)}
-                </SelectContent>
-              </Select>
+              <div className="flex items-center justify-between">
+                <Label>Split ({currency})</Label>
+                <p className="text-sm text-muted-foreground">Total: <b className="text-foreground tabular-nums">{formatMoney(splitSum, currency)}</b></p>
+              </div>
+              <div className="space-y-2">
+                {form.splits.map((s, i) => (
+                  <div key={i} className="flex gap-2 items-start">
+                    <Select value={s.category_id} onValueChange={(v) => {
+                      const next = [...form.splits]; next[i] = { ...next[i], category_id: v }; setForm({ ...form, splits: next })
+                    }}>
+                      <SelectTrigger className="flex-1"><SelectValue placeholder="Kategori" /></SelectTrigger>
+                      <SelectContent>{catsForType.map((c) => <SelectItem key={c.id} value={c.id}>{c.icon} {c.name}</SelectItem>)}</SelectContent>
+                    </Select>
+                    <Input type="number" placeholder="Jumlah" value={s.amount} onChange={(e) => {
+                      const next = [...form.splits]; next[i] = { ...next[i], amount: e.target.value }; setForm({ ...form, splits: next })
+                    }} className="w-32" />
+                    {form.splits.length > 2 && (
+                      <Button type="button" variant="ghost" size="icon" className="h-9 w-9 flex-shrink-0" onClick={() => {
+                        setForm({ ...form, splits: form.splits.filter((_, idx) => idx !== i) })
+                      }}><X className="h-4 w-4" /></Button>
+                    )}
+                  </div>
+                ))}
+                <Button type="button" variant="outline" size="sm" onClick={() => setForm({ ...form, splits: [...form.splits, { category_id: '', amount: '' }] })}>
+                  <Plus className="h-3.5 w-3.5 mr-1" />Tambah Split
+                </Button>
+              </div>
             </div>
           )}
 
@@ -952,24 +1052,24 @@ function TransactionDialog({ state, setState, accounts, categories, onSaved }) {
 
 function AccountDialog({ state, setState, onSaved }) {
   const editing = state.editing
-  const [form, setForm] = useState({ name: '', type: 'cash', initial_balance: '0', icon: '💵' })
+  const [form, setForm] = useState({ name: '', type: 'cash', initial_balance: '0', icon: '💵', currency: 'IDR' })
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
     if (state.open) {
-      if (editing) setForm({ name: editing.name, type: editing.type, initial_balance: String(editing.initial_balance || 0), icon: editing.icon })
-      else setForm({ name: '', type: 'cash', initial_balance: '0', icon: '💵' })
+      if (editing) setForm({ name: editing.name, type: editing.type, initial_balance: String(editing.initial_balance || 0), icon: editing.icon, currency: editing.currency || 'IDR' })
+      else setForm({ name: '', type: 'cash', initial_balance: '0', icon: '💵', currency: 'IDR' })
     }
   }, [state.open, editing])
 
   const save = async () => {
-    if (!form.name.trim()) return toast.error('Nama akun wajib diisi')
+    if (!form.name.trim()) return toast.error('Nama kantong wajib diisi')
     setSaving(true)
     try {
-      const payload = { name: form.name.trim(), type: form.type, initial_balance: Number(form.initial_balance) || 0, icon: form.icon }
+      const payload = { name: form.name.trim(), type: form.type, initial_balance: Number(form.initial_balance) || 0, icon: form.icon, currency: form.currency }
       if (editing) await apiFetch(`/accounts/${editing.id}`, { method: 'PUT', body: JSON.stringify(payload) })
       else await apiFetch('/accounts', { method: 'POST', body: JSON.stringify(payload) })
-      toast.success(editing ? 'Akun diperbarui' : 'Akun ditambahkan')
+      toast.success(editing ? 'Kantong diperbarui' : 'Kantong ditambahkan')
       setState({ open: false, editing: null })
       await onSaved()
     } catch (e) { toast.error(e.message) }
@@ -985,17 +1085,28 @@ function AccountDialog({ state, setState, onSaved }) {
             <Label>Nama kantong</Label>
             <Input placeholder="Rekening BCA" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
           </div>
-          <div className="space-y-2">
-            <Label>Jenis kantong</Label>
-            <Select value={form.type} onValueChange={(v) => setForm({ ...form, type: v, icon: ACCOUNT_TYPES.find((t) => t.value === v)?.icon || form.icon })}>
-              <SelectTrigger><SelectValue /></SelectTrigger>
-              <SelectContent>
-                {ACCOUNT_TYPES.map((t) => <SelectItem key={t.value} value={t.value}>{t.icon} {t.label}</SelectItem>)}
-              </SelectContent>
-            </Select>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-2">
+              <Label>Jenis kantong</Label>
+              <Select value={form.type} onValueChange={(v) => setForm({ ...form, type: v, icon: ACCOUNT_TYPES.find((t) => t.value === v)?.icon || form.icon })}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {ACCOUNT_TYPES.map((t) => <SelectItem key={t.value} value={t.value}>{t.icon} {t.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>Mata uang</Label>
+              <Select value={form.currency} onValueChange={(v) => setForm({ ...form, currency: v })}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {SUPPORTED_CURRENCIES.map((c) => <SelectItem key={c} value={c}>{CURRENCY_SYMBOLS[c]} {c}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
           <div className="space-y-2">
-            <Label>Saldo awal (IDR)</Label>
+            <Label>Saldo awal ({form.currency})</Label>
             <Input type="number" value={form.initial_balance} onChange={(e) => setForm({ ...form, initial_balance: e.target.value })} />
           </div>
           <div className="space-y-2">
