@@ -17,7 +17,8 @@ import { toast } from 'sonner'
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend, CartesianGrid, BarChart, Bar } from 'recharts'
 import {
   Wallet, TrendingUp, TrendingDown, PlusCircle, LogOut, LayoutDashboard, ArrowLeftRight,
-  Tag, Download, Trash2, Edit2, ArrowUpCircle, ArrowDownCircle, Loader2, Search, Menu, X
+  Tag, Download, Trash2, Edit2, ArrowUpCircle, ArrowDownCircle, Loader2, Search, Menu, X,
+  Target, AlertTriangle, CheckCircle2
 } from 'lucide-react'
 
 export default function DashboardPage() {
@@ -114,7 +115,8 @@ export default function DashboardPage() {
   const navItems = [
     { id: 'overview', label: 'Ringkasan', icon: LayoutDashboard },
     { id: 'transactions', label: 'Transaksi', icon: ArrowLeftRight },
-    { id: 'accounts', label: 'Akun', icon: Wallet },
+    { id: 'pockets', label: 'Kantong', icon: Wallet },
+    { id: 'budgets', label: 'Budget', icon: Target },
     { id: 'categories', label: 'Kategori', icon: Tag },
     { id: 'export', label: 'Export Data', icon: Download },
   ]
@@ -182,17 +184,20 @@ export default function DashboardPage() {
               }}
             />
           )}
-          {tab === 'accounts' && (
+          {tab === 'pockets' && (
             <AccountsTab accounts={accounts}
               onAdd={() => setAccDialog({ open: true, editing: null })}
               onEdit={(a) => setAccDialog({ open: true, editing: a })}
               onDelete={async (id) => {
-                if (!confirm('Hapus akun ini beserta semua transaksinya?')) return
+                if (!confirm('Hapus kantong ini beserta semua transaksinya?')) return
                 await apiFetch(`/accounts/${id}`, { method: 'DELETE' })
-                toast.success('Akun dihapus')
+                toast.success('Kantong dihapus')
                 await loadAll()
               }}
             />
+          )}
+          {tab === 'budgets' && (
+            <BudgetsTab categories={categories} onRefreshSummary={refreshSummary} />
           )}
           {tab === 'categories' && (
             <CategoriesTab categories={categories}
@@ -305,8 +310,8 @@ function OverviewTab({ summary, accounts, onAddTrx, categories }) {
 
       <Card>
         <CardHeader>
-          <CardTitle>Akun Keuangan</CardTitle>
-          <CardDescription>Saldo semua akun</CardDescription>
+          <CardTitle>Kantong Keuangan</CardTitle>
+          <CardDescription>Saldo semua kantong</CardDescription>
         </CardHeader>
         <CardContent>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
@@ -368,7 +373,7 @@ function TransactionsTab({ transactions, accounts, categories, filter, setFilter
           <Select value={filter.account_id} onValueChange={(v) => setFilter({ ...filter, account_id: v })}>
             <SelectTrigger className="w-full md:w-48"><SelectValue /></SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">Semua akun</SelectItem>
+              <SelectItem value="all">Semua kantong</SelectItem>
               {accounts.map((a) => <SelectItem key={a.id} value={a.id}>{a.icon} {a.name}</SelectItem>)}
             </SelectContent>
           </Select>
@@ -437,7 +442,7 @@ function AccountsTab({ accounts, onAdd, onEdit, onDelete }) {
     <div className="space-y-4">
       <div className="flex justify-end">
         <Button onClick={onAdd} className="bg-emerald-600 hover:bg-emerald-700">
-          <PlusCircle className="h-4 w-4 mr-2" />Tambah Akun
+          <PlusCircle className="h-4 w-4 mr-2" />Tambah Kantong
         </Button>
       </div>
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -522,13 +527,228 @@ function ExportTab({ onExport, accounts }) {
       <CardContent className="space-y-4">
         <div className="rounded-lg border p-4 bg-muted/30">
           <p className="text-sm font-medium mb-1">Format file:</p>
-          <p className="text-xs text-muted-foreground">Kolom: Tanggal, Tipe, Jumlah, Akun, Kategori, Tujuan Transfer, Catatan, Tags</p>
+          <p className="text-xs text-muted-foreground">Kolom: Tanggal, Tipe, Jumlah, Kantong, Kategori, Tujuan Transfer, Catatan, Tags</p>
         </div>
         <Button onClick={onExport} size="lg" className="bg-emerald-600 hover:bg-emerald-700">
           <Download className="h-4 w-4 mr-2" />Download CSV Sekarang
         </Button>
       </CardContent>
     </Card>
+  )
+}
+
+// ============ BUDGETS TAB ============
+function BudgetsTab({ categories, onRefreshSummary }) {
+  const now = new Date()
+  const defaultMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+  const [month, setMonth] = useState(defaultMonth)
+  const [budgets, setBudgets] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [dialog, setDialog] = useState({ open: false, editing: null })
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      const r = await apiFetch(`/budgets?month=${month}`)
+      setBudgets(r.budgets)
+    } catch (e) { toast.error(e.message) }
+    finally { setLoading(false) }
+  }, [month])
+
+  useEffect(() => { load() }, [load])
+
+  const totalBudget = budgets.reduce((s, b) => s + b.amount, 0)
+  const totalSpent = budgets.reduce((s, b) => s + b.spent, 0)
+  const overallPercent = totalBudget > 0 ? Math.round((totalSpent / totalBudget) * 100) : 0
+
+  const monthLabel = new Date(month + '-01').toLocaleDateString('id-ID', { month: 'long', year: 'numeric' })
+  const expenseCategories = categories.filter((c) => c.type === 'expense')
+  const budgetedCategoryIds = new Set(budgets.map((b) => b.category_id))
+  const availableCategories = expenseCategories.filter((c) => !budgetedCategoryIds.has(c.id))
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <Input type="month" value={month} onChange={(e) => setMonth(e.target.value)} className="w-44" />
+          <span className="text-sm text-muted-foreground hidden md:inline">Budget untuk <b>{monthLabel}</b></span>
+        </div>
+        <Button onClick={() => setDialog({ open: true, editing: null })} className="bg-emerald-600 hover:bg-emerald-700" disabled={availableCategories.length === 0}>
+          <PlusCircle className="h-4 w-4 mr-2" />Tambah Budget
+        </Button>
+      </div>
+
+      {budgets.length > 0 && (
+        <Card>
+          <CardContent className="p-5">
+            <div className="flex items-center justify-between mb-3">
+              <div>
+                <p className="text-xs uppercase tracking-wide text-muted-foreground font-medium">Total Budget Bulan Ini</p>
+                <p className="text-2xl font-bold tabular-nums">{formatIDR(totalSpent)} <span className="text-base text-muted-foreground font-normal">/ {formatIDR(totalBudget)}</span></p>
+              </div>
+              <div className={`text-3xl font-bold ${overallPercent >= 100 ? 'text-rose-600' : overallPercent >= 80 ? 'text-amber-600' : 'text-emerald-600'}`}>{overallPercent}%</div>
+            </div>
+            <div className="h-3 rounded-full bg-muted overflow-hidden">
+              <div
+                className={`h-full transition-all ${overallPercent >= 100 ? 'bg-rose-500' : overallPercent >= 80 ? 'bg-amber-500' : 'bg-emerald-500'}`}
+                style={{ width: `${Math.min(overallPercent, 100)}%` }}
+              />
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {loading ? (
+        <div className="py-10 flex justify-center"><Loader2 className="h-6 w-6 animate-spin text-emerald-600" /></div>
+      ) : budgets.length === 0 ? (
+        <Card>
+          <CardContent className="py-16 text-center">
+            <Target className="h-12 w-12 mx-auto text-muted-foreground mb-3" />
+            <p className="font-medium mb-1">Belum ada budget untuk {monthLabel}</p>
+            <p className="text-sm text-muted-foreground mb-4">Set budget per kategori untuk mengontrol pengeluaran Anda.</p>
+            <Button onClick={() => setDialog({ open: true, editing: null })} className="bg-emerald-600 hover:bg-emerald-700" disabled={availableCategories.length === 0}>
+              <PlusCircle className="h-4 w-4 mr-2" />Buat Budget Pertama
+            </Button>
+          </CardContent>
+        </Card>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {budgets.map((b) => (
+            <BudgetCard key={b.id} b={b}
+              onEdit={() => setDialog({ open: true, editing: b })}
+              onDelete={async () => {
+                if (!confirm(`Hapus budget "${b.category_name}"?`)) return
+                await apiFetch(`/budgets/${b.id}`, { method: 'DELETE' })
+                toast.success('Budget dihapus')
+                await load()
+              }}
+            />
+          ))}
+        </div>
+      )}
+
+      <BudgetDialog
+        state={dialog} setState={setDialog} month={month}
+        availableCategories={availableCategories} allExpenseCategories={expenseCategories}
+        onSaved={async () => { await load(); if (onRefreshSummary) await onRefreshSummary() }}
+      />
+    </div>
+  )
+}
+
+function BudgetCard({ b, onEdit, onDelete }) {
+  const StatusIcon = b.status === 'over' ? AlertTriangle : b.status === 'warning' ? AlertTriangle : CheckCircle2
+  const statusColor = b.status === 'over' ? 'text-rose-600' : b.status === 'warning' ? 'text-amber-600' : 'text-emerald-600'
+  const barColor = b.status === 'over' ? 'bg-rose-500' : b.status === 'warning' ? 'bg-amber-500' : 'bg-emerald-500'
+  const statusText = b.status === 'over' ? 'Over budget!' : b.status === 'warning' ? 'Hampir habis' : 'Aman'
+
+  return (
+    <Card>
+      <CardContent className="p-5">
+        <div className="flex items-start justify-between mb-3">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="h-11 w-11 rounded-lg flex items-center justify-center text-xl" style={{ backgroundColor: `${b.category_color}20` }}>{b.category_icon}</div>
+            <div className="min-w-0">
+              <p className="font-semibold truncate">{b.category_name}</p>
+              <div className={`inline-flex items-center gap-1 text-xs font-medium ${statusColor}`}>
+                <StatusIcon className="h-3 w-3" />{statusText}
+              </div>
+            </div>
+          </div>
+          <div className="flex gap-1 flex-shrink-0">
+            <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onEdit}><Edit2 className="h-3.5 w-3.5" /></Button>
+            <Button variant="ghost" size="icon" className="h-8 w-8 text-rose-600" onClick={onDelete}><Trash2 className="h-3.5 w-3.5" /></Button>
+          </div>
+        </div>
+
+        <div className="flex items-baseline justify-between mb-2">
+          <p className="text-sm text-muted-foreground">Terpakai</p>
+          <p className={`font-bold tabular-nums ${statusColor}`}>{b.percent}%</p>
+        </div>
+        <div className="h-2.5 rounded-full bg-muted overflow-hidden mb-3">
+          <div className={`h-full transition-all ${barColor}`} style={{ width: `${Math.min(b.percent, 100)}%` }} />
+        </div>
+        <div className="flex justify-between text-sm">
+          <div>
+            <p className="text-xs text-muted-foreground">Terpakai</p>
+            <p className="font-semibold tabular-nums">{formatIDR(b.spent)}</p>
+          </div>
+          <div className="text-right">
+            <p className="text-xs text-muted-foreground">Budget</p>
+            <p className="font-semibold tabular-nums">{formatIDR(b.amount)}</p>
+          </div>
+          <div className="text-right">
+            <p className="text-xs text-muted-foreground">{b.remaining < 0 ? 'Lebih' : 'Sisa'}</p>
+            <p className={`font-semibold tabular-nums ${b.remaining < 0 ? 'text-rose-600' : 'text-emerald-600'}`}>
+              {formatIDR(Math.abs(b.remaining))}
+            </p>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+function BudgetDialog({ state, setState, month, availableCategories, allExpenseCategories, onSaved }) {
+  const editing = state.editing
+  const [form, setForm] = useState({ category_id: '', amount: '' })
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    if (state.open) {
+      if (editing) setForm({ category_id: editing.category_id, amount: String(editing.amount) })
+      else setForm({ category_id: availableCategories[0]?.id || '', amount: '' })
+    }
+  }, [state.open, editing, availableCategories])
+
+  const save = async () => {
+    if (!form.category_id) return toast.error('Pilih kategori')
+    if (!form.amount || Number(form.amount) <= 0) return toast.error('Jumlah budget harus > 0')
+    setSaving(true)
+    try {
+      if (editing) {
+        await apiFetch(`/budgets/${editing.id}`, { method: 'PUT', body: JSON.stringify({ amount: Number(form.amount) }) })
+        toast.success('Budget diperbarui')
+      } else {
+        await apiFetch('/budgets', { method: 'POST', body: JSON.stringify({ category_id: form.category_id, amount: Number(form.amount), month }) })
+        toast.success('Budget dibuat')
+      }
+      setState({ open: false, editing: null })
+      await onSaved()
+    } catch (e) { toast.error(e.message) }
+    finally { setSaving(false) }
+  }
+
+  const catOptions = editing ? allExpenseCategories : availableCategories
+
+  return (
+    <Dialog open={state.open} onOpenChange={(o) => setState({ open: o, editing: o ? editing : null })}>
+      <DialogContent>
+        <DialogHeader><DialogTitle>{editing ? 'Edit Budget' : 'Budget Baru'}</DialogTitle></DialogHeader>
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <Label>Kategori pengeluaran</Label>
+            <Select value={form.category_id} onValueChange={(v) => setForm({ ...form, category_id: v })} disabled={!!editing}>
+              <SelectTrigger><SelectValue placeholder="Pilih kategori" /></SelectTrigger>
+              <SelectContent>
+                {catOptions.map((c) => <SelectItem key={c.id} value={c.id}>{c.icon} {c.name}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            {editing && <p className="text-xs text-muted-foreground">Kategori tidak bisa diubah setelah budget dibuat</p>}
+          </div>
+          <div className="space-y-2">
+            <Label>Jumlah budget (IDR)</Label>
+            <Input type="number" min="0" step="10000" placeholder="500000" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} className="text-lg font-semibold" />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setState({ open: false, editing: null })}>Batal</Button>
+          <Button onClick={save} disabled={saving} className="bg-emerald-600 hover:bg-emerald-700">
+            {saving && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}Simpan
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -647,9 +867,9 @@ function TransactionDialog({ state, setState, accounts, categories, onSaved }) {
           </div>
 
           <div className="space-y-2">
-            <Label>{form.type === 'transfer' ? 'Dari akun' : 'Akun'}</Label>
+            <Label>{form.type === 'transfer' ? 'Dari kantong' : 'Kantong'}</Label>
             <Select value={form.account_id} onValueChange={(v) => setForm({ ...form, account_id: v })}>
-              <SelectTrigger><SelectValue placeholder="Pilih akun" /></SelectTrigger>
+              <SelectTrigger><SelectValue placeholder="Pilih kantong" /></SelectTrigger>
               <SelectContent>
                 {accounts.map((a) => <SelectItem key={a.id} value={a.id}>{a.icon} {a.name}</SelectItem>)}
               </SelectContent>
@@ -658,9 +878,9 @@ function TransactionDialog({ state, setState, accounts, categories, onSaved }) {
 
           {form.type === 'transfer' ? (
             <div className="space-y-2">
-              <Label>Ke akun</Label>
+              <Label>Ke kantong</Label>
               <Select value={form.transfer_to_account_id} onValueChange={(v) => setForm({ ...form, transfer_to_account_id: v })}>
-                <SelectTrigger><SelectValue placeholder="Pilih akun tujuan" /></SelectTrigger>
+                <SelectTrigger><SelectValue placeholder="Pilih kantong tujuan" /></SelectTrigger>
                 <SelectContent>
                   {accounts.filter((a) => a.id !== form.account_id).map((a) => <SelectItem key={a.id} value={a.id}>{a.icon} {a.name}</SelectItem>)}
                 </SelectContent>
@@ -733,14 +953,14 @@ function AccountDialog({ state, setState, onSaved }) {
   return (
     <Dialog open={state.open} onOpenChange={(o) => setState({ open: o, editing: o ? editing : null })}>
       <DialogContent>
-        <DialogHeader><DialogTitle>{editing ? 'Edit Akun' : 'Akun Baru'}</DialogTitle></DialogHeader>
+        <DialogHeader><DialogTitle>{editing ? 'Edit Kantong' : 'Kantong Baru'}</DialogTitle></DialogHeader>
         <div className="space-y-4">
           <div className="space-y-2">
-            <Label>Nama akun</Label>
+            <Label>Nama kantong</Label>
             <Input placeholder="Rekening BCA" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
           </div>
           <div className="space-y-2">
-            <Label>Jenis akun</Label>
+            <Label>Jenis kantong</Label>
             <Select value={form.type} onValueChange={(v) => setForm({ ...form, type: v, icon: ACCOUNT_TYPES.find((t) => t.value === v)?.icon || form.icon })}>
               <SelectTrigger><SelectValue /></SelectTrigger>
               <SelectContent>

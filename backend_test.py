@@ -719,6 +719,432 @@ def test_rls():
     except Exception as e:
         log_test("RLS: User B cannot delete User A account", False, f"Exception: {str(e)}")
 
+def test_budgets():
+    """Test budget CRUD and progress tracking"""
+    print("\n=== Testing Budgets CRUD & Progress Tracking ===")
+    
+    # Setup: Register new user and get token
+    try:
+        timestamp = int(time.time())
+        email = f"budget_user_{timestamp}@finmate.test"
+        payload = {
+            "email": email,
+            "password": "password123",
+            "name": "Budget Test User"
+        }
+        resp = requests.post(f"{BASE_URL}/auth/register", json=payload, timeout=10)
+        data = resp.json()
+        token = data['token']
+        headers = {"Authorization": f"Bearer {token}"}
+        log_test("Budget Test: User registration", True, f"User created: {email}")
+    except Exception as e:
+        log_test("Budget Test: User registration", False, f"Exception: {str(e)}")
+        return
+    
+    # Get default expense categories
+    try:
+        resp = requests.get(f"{BASE_URL}/categories", headers=headers, timeout=10)
+        categories = resp.json().get('categories', [])
+        expense_cats = [c for c in categories if c['type'] == 'expense']
+        
+        # Find "Makanan & Minuman" and "Transportasi"
+        makanan_cat = next((c for c in expense_cats if 'Makanan' in c['name']), None)
+        transport_cat = next((c for c in expense_cats if 'Transport' in c['name']), None)
+        
+        if makanan_cat and transport_cat:
+            log_test("Budget Test: Get expense categories", True, f"Found {len(expense_cats)} expense categories")
+        else:
+            log_test("Budget Test: Get expense categories", False, "Required categories not found")
+            return
+    except Exception as e:
+        log_test("Budget Test: Get expense categories", False, f"Exception: {str(e)}")
+        return
+    
+    # Get default account (Kas)
+    try:
+        resp = requests.get(f"{BASE_URL}/accounts", headers=headers, timeout=10)
+        accounts = resp.json().get('accounts', [])
+        kas_account = next((a for a in accounts if a['name'] == 'Kas'), None)
+        
+        if kas_account:
+            log_test("Budget Test: Get Kas account", True, f"Kas account ID: {kas_account['id']}")
+        else:
+            log_test("Budget Test: Get Kas account", False, "Kas account not found")
+            return
+    except Exception as e:
+        log_test("Budget Test: Get Kas account", False, f"Exception: {str(e)}")
+        return
+    
+    # Test 1: GET empty budgets initially
+    try:
+        resp = requests.get(f"{BASE_URL}/budgets?month=2025-06", headers=headers, timeout=10)
+        data = resp.json()
+        
+        if resp.status_code == 200 and data.get('month') == '2025-06' and len(data.get('budgets', [])) == 0:
+            log_test("Test 1: GET empty budgets initially", True, "Returns empty budgets array")
+        else:
+            log_test("Test 1: GET empty budgets initially", False, f"Unexpected response: {data}")
+    except Exception as e:
+        log_test("Test 1: GET empty budgets initially", False, f"Exception: {str(e)}")
+    
+    # Test 2: POST create budget for Makanan category
+    budget_id = None
+    try:
+        payload = {
+            "category_id": makanan_cat['id'],
+            "amount": 1000000,
+            "month": "2025-06"
+        }
+        resp = requests.post(f"{BASE_URL}/budgets", json=payload, headers=headers, timeout=10)
+        data = resp.json()
+        
+        if resp.status_code == 200:
+            budget_id = data.get('budget', {}).get('id') or data.get('id')
+            log_test("Test 2: POST create budget", True, f"Budget created with ID: {budget_id}")
+        else:
+            log_test("Test 2: POST create budget", False, f"Status: {resp.status_code}, Response: {data}")
+    except Exception as e:
+        log_test("Test 2: POST create budget", False, f"Exception: {str(e)}")
+    
+    # Test 3: GET budget with spent=0, remaining=1000000, percent=0, status="safe"
+    try:
+        resp = requests.get(f"{BASE_URL}/budgets?month=2025-06", headers=headers, timeout=10)
+        data = resp.json()
+        budgets = data.get('budgets', [])
+        
+        if len(budgets) == 1:
+            budget = budgets[0]
+            checks = [
+                budget['spent'] == 0,
+                budget['remaining'] == 1000000,
+                budget['percent'] == 0,
+                budget['status'] == 'safe',
+                budget['amount'] == 1000000,
+                budget['category_name'] == makanan_cat['name']
+            ]
+            
+            if all(checks):
+                log_test("Test 3: GET budget initial state", True, f"Budget: spent=0, remaining=1000000, percent=0, status=safe")
+            else:
+                log_test("Test 3: GET budget initial state", False, f"Budget state incorrect: {budget}")
+        else:
+            log_test("Test 3: GET budget initial state", False, f"Expected 1 budget, got {len(budgets)}")
+    except Exception as e:
+        log_test("Test 3: GET budget initial state", False, f"Exception: {str(e)}")
+    
+    # Test 4: Create expense transaction (400000) in Makanan category
+    try:
+        payload = {
+            "type": "expense",
+            "amount": 400000,
+            "account_id": kas_account['id'],
+            "category_id": makanan_cat['id'],
+            "date": "2025-06-10T10:00:00Z",
+            "description": "Belanja bulanan"
+        }
+        resp = requests.post(f"{BASE_URL}/transactions", json=payload, headers=headers, timeout=10)
+        
+        if resp.status_code == 200:
+            log_test("Test 4: Create expense transaction (400K)", True, "Transaction created")
+        else:
+            log_test("Test 4: Create expense transaction (400K)", False, f"Status: {resp.status_code}")
+    except Exception as e:
+        log_test("Test 4: Create expense transaction (400K)", False, f"Exception: {str(e)}")
+    
+    # Test 5: GET budget with spent=400000, remaining=600000, percent=40, status="safe"
+    try:
+        resp = requests.get(f"{BASE_URL}/budgets?month=2025-06", headers=headers, timeout=10)
+        data = resp.json()
+        budgets = data.get('budgets', [])
+        
+        if len(budgets) == 1:
+            budget = budgets[0]
+            checks = [
+                budget['spent'] == 400000,
+                budget['remaining'] == 600000,
+                budget['percent'] == 40,
+                budget['status'] == 'safe'
+            ]
+            
+            if all(checks):
+                log_test("Test 5: GET budget after 1st expense", True, f"spent=400000, remaining=600000, percent=40, status=safe")
+            else:
+                log_test("Test 5: GET budget after 1st expense", False, f"Budget: spent={budget['spent']}, remaining={budget['remaining']}, percent={budget['percent']}, status={budget['status']}")
+        else:
+            log_test("Test 5: GET budget after 1st expense", False, f"Expected 1 budget, got {len(budgets)}")
+    except Exception as e:
+        log_test("Test 5: GET budget after 1st expense", False, f"Exception: {str(e)}")
+    
+    # Test 6: Add another expense (500000) -> spent=900000, percent=90, status="warning"
+    try:
+        payload = {
+            "type": "expense",
+            "amount": 500000,
+            "account_id": kas_account['id'],
+            "category_id": makanan_cat['id'],
+            "date": "2025-06-15T10:00:00Z",
+            "description": "Makan di restoran"
+        }
+        resp = requests.post(f"{BASE_URL}/transactions", json=payload, headers=headers, timeout=10)
+        
+        if resp.status_code == 200:
+            log_test("Test 6: Create 2nd expense (500K)", True, "Transaction created")
+        else:
+            log_test("Test 6: Create 2nd expense (500K)", False, f"Status: {resp.status_code}")
+    except Exception as e:
+        log_test("Test 6: Create 2nd expense (500K)", False, f"Exception: {str(e)}")
+    
+    # Test 7: GET budget with spent=900000, percent=90, status="warning"
+    try:
+        resp = requests.get(f"{BASE_URL}/budgets?month=2025-06", headers=headers, timeout=10)
+        data = resp.json()
+        budgets = data.get('budgets', [])
+        
+        if len(budgets) == 1:
+            budget = budgets[0]
+            checks = [
+                budget['spent'] == 900000,
+                budget['remaining'] == 100000,
+                budget['percent'] == 90,
+                budget['status'] == 'warning'
+            ]
+            
+            if all(checks):
+                log_test("Test 7: GET budget warning state", True, f"spent=900000, remaining=100000, percent=90, status=warning")
+            else:
+                log_test("Test 7: GET budget warning state", False, f"Budget: spent={budget['spent']}, remaining={budget['remaining']}, percent={budget['percent']}, status={budget['status']}")
+        else:
+            log_test("Test 7: GET budget warning state", False, f"Expected 1 budget, got {len(budgets)}")
+    except Exception as e:
+        log_test("Test 7: GET budget warning state", False, f"Exception: {str(e)}")
+    
+    # Test 8: Add third expense (200000) -> spent=1100000, percent=110, status="over"
+    try:
+        payload = {
+            "type": "expense",
+            "amount": 200000,
+            "account_id": kas_account['id'],
+            "category_id": makanan_cat['id'],
+            "date": "2025-06-20T10:00:00Z",
+            "description": "Kopi dan snack"
+        }
+        resp = requests.post(f"{BASE_URL}/transactions", json=payload, headers=headers, timeout=10)
+        
+        if resp.status_code == 200:
+            log_test("Test 8: Create 3rd expense (200K)", True, "Transaction created")
+        else:
+            log_test("Test 8: Create 3rd expense (200K)", False, f"Status: {resp.status_code}")
+    except Exception as e:
+        log_test("Test 8: Create 3rd expense (200K)", False, f"Exception: {str(e)}")
+    
+    # Test 9: GET budget with spent=1100000, percent=110, status="over", remaining=-100000
+    try:
+        resp = requests.get(f"{BASE_URL}/budgets?month=2025-06", headers=headers, timeout=10)
+        data = resp.json()
+        budgets = data.get('budgets', [])
+        
+        if len(budgets) == 1:
+            budget = budgets[0]
+            checks = [
+                budget['spent'] == 1100000,
+                budget['remaining'] == -100000,
+                budget['percent'] == 110,
+                budget['status'] == 'over'
+            ]
+            
+            if all(checks):
+                log_test("Test 9: GET budget over state", True, f"spent=1100000, remaining=-100000, percent=110, status=over")
+            else:
+                log_test("Test 9: GET budget over state", False, f"Budget: spent={budget['spent']}, remaining={budget['remaining']}, percent={budget['percent']}, status={budget['status']}")
+        else:
+            log_test("Test 9: GET budget over state", False, f"Expected 1 budget, got {len(budgets)}")
+    except Exception as e:
+        log_test("Test 9: GET budget over state", False, f"Exception: {str(e)}")
+    
+    # Test 10: Test upsert - POST same category & month with different amount
+    try:
+        payload = {
+            "category_id": makanan_cat['id'],
+            "amount": 2000000,
+            "month": "2025-06"
+        }
+        resp = requests.post(f"{BASE_URL}/budgets", json=payload, headers=headers, timeout=10)
+        
+        if resp.status_code == 200:
+            # Verify only 1 budget exists with updated amount
+            resp_get = requests.get(f"{BASE_URL}/budgets?month=2025-06", headers=headers, timeout=10)
+            budgets = resp_get.json().get('budgets', [])
+            
+            if len(budgets) == 1 and budgets[0]['amount'] == 2000000:
+                log_test("Test 10: Upsert budget (no duplicate)", True, f"Budget updated to 2000000, still 1 budget")
+            else:
+                log_test("Test 10: Upsert budget (no duplicate)", False, f"Expected 1 budget with amount=2000000, got {len(budgets)} budgets")
+        else:
+            log_test("Test 10: Upsert budget (no duplicate)", False, f"Status: {resp.status_code}")
+    except Exception as e:
+        log_test("Test 10: Upsert budget (no duplicate)", False, f"Exception: {str(e)}")
+    
+    # Test 11: Filter by different month - create budget for July
+    july_budget_id = None
+    try:
+        payload = {
+            "category_id": transport_cat['id'],
+            "amount": 500000,
+            "month": "2025-07"
+        }
+        resp = requests.post(f"{BASE_URL}/budgets", json=payload, headers=headers, timeout=10)
+        data = resp.json()
+        
+        if resp.status_code == 200:
+            july_budget_id = data.get('budget', {}).get('id') or data.get('id')
+            
+            # GET June budgets - should return only Makanan budget
+            resp_june = requests.get(f"{BASE_URL}/budgets?month=2025-06", headers=headers, timeout=10)
+            june_budgets = resp_june.json().get('budgets', [])
+            
+            # GET July budgets - should return only Transport budget
+            resp_july = requests.get(f"{BASE_URL}/budgets?month=2025-07", headers=headers, timeout=10)
+            july_budgets = resp_july.json().get('budgets', [])
+            
+            june_ok = len(june_budgets) == 1 and june_budgets[0]['category_id'] == makanan_cat['id']
+            july_ok = len(july_budgets) == 1 and july_budgets[0]['category_id'] == transport_cat['id']
+            
+            if june_ok and july_ok:
+                log_test("Test 11: Filter by month", True, "June returns Makanan, July returns Transport")
+            else:
+                log_test("Test 11: Filter by month", False, f"June: {len(june_budgets)} budgets, July: {len(july_budgets)} budgets")
+        else:
+            log_test("Test 11: Filter by month", False, f"Status: {resp.status_code}")
+    except Exception as e:
+        log_test("Test 11: Filter by month", False, f"Exception: {str(e)}")
+    
+    # Test 12: PUT update budget amount
+    try:
+        if july_budget_id:
+            payload = {"amount": 3000000}
+            resp = requests.put(f"{BASE_URL}/budgets/{july_budget_id}", json=payload, headers=headers, timeout=10)
+            
+            if resp.status_code == 200:
+                # Verify with GET
+                resp_get = requests.get(f"{BASE_URL}/budgets?month=2025-07", headers=headers, timeout=10)
+                budgets = resp_get.json().get('budgets', [])
+                
+                if len(budgets) == 1 and budgets[0]['amount'] == 3000000:
+                    log_test("Test 12: PUT update budget amount", True, "Budget amount updated to 3000000")
+                else:
+                    log_test("Test 12: PUT update budget amount", False, f"Amount not updated correctly: {budgets[0]['amount'] if budgets else 'N/A'}")
+            else:
+                log_test("Test 12: PUT update budget amount", False, f"Status: {resp.status_code}")
+        else:
+            log_test("Test 12: PUT update budget amount", False, "No budget ID available")
+    except Exception as e:
+        log_test("Test 12: PUT update budget amount", False, f"Exception: {str(e)}")
+    
+    # Test 13: DELETE budget
+    try:
+        if july_budget_id:
+            resp = requests.delete(f"{BASE_URL}/budgets/{july_budget_id}", headers=headers, timeout=10)
+            
+            if resp.status_code == 200:
+                # Verify with GET - should return empty
+                resp_get = requests.get(f"{BASE_URL}/budgets?month=2025-07", headers=headers, timeout=10)
+                budgets = resp_get.json().get('budgets', [])
+                
+                if len(budgets) == 0:
+                    log_test("Test 13: DELETE budget", True, "Budget deleted, GET returns empty")
+                else:
+                    log_test("Test 13: DELETE budget", False, f"Budget still exists: {len(budgets)} budgets")
+            else:
+                log_test("Test 13: DELETE budget", False, f"Status: {resp.status_code}")
+        else:
+            log_test("Test 13: DELETE budget", False, "No budget ID available")
+    except Exception as e:
+        log_test("Test 13: DELETE budget", False, f"Exception: {str(e)}")
+    
+    # Test 14: Validation - POST without required fields
+    try:
+        # Missing category_id
+        payload = {"amount": 1000000, "month": "2025-08"}
+        resp = requests.post(f"{BASE_URL}/budgets", json=payload, headers=headers, timeout=10)
+        
+        if resp.status_code == 400:
+            log_test("Test 14: Validation - missing category_id", True, "Returns 400 error")
+        else:
+            log_test("Test 14: Validation - missing category_id", False, f"Expected 400, got {resp.status_code}")
+    except Exception as e:
+        log_test("Test 14: Validation - missing category_id", False, f"Exception: {str(e)}")
+    
+    try:
+        # Missing amount
+        payload = {"category_id": makanan_cat['id'], "month": "2025-08"}
+        resp = requests.post(f"{BASE_URL}/budgets", json=payload, headers=headers, timeout=10)
+        
+        if resp.status_code == 400:
+            log_test("Test 15: Validation - missing amount", True, "Returns 400 error")
+        else:
+            log_test("Test 15: Validation - missing amount", False, f"Expected 400, got {resp.status_code}")
+    except Exception as e:
+        log_test("Test 15: Validation - missing amount", False, f"Exception: {str(e)}")
+    
+    try:
+        # Missing month
+        payload = {"category_id": makanan_cat['id'], "amount": 1000000}
+        resp = requests.post(f"{BASE_URL}/budgets", json=payload, headers=headers, timeout=10)
+        
+        if resp.status_code == 400:
+            log_test("Test 16: Validation - missing month", True, "Returns 400 error")
+        else:
+            log_test("Test 16: Validation - missing month", False, f"Expected 400, got {resp.status_code}")
+    except Exception as e:
+        log_test("Test 16: Validation - missing month", False, f"Exception: {str(e)}")
+    
+    # Test 17-18: RLS - Create User B and test data isolation
+    try:
+        timestamp_b = int(time.time()) + 1
+        email_b = f"budget_user_b_{timestamp_b}@finmate.test"
+        payload_b = {
+            "email": email_b,
+            "password": "password123",
+            "name": "Budget Test User B"
+        }
+        resp_b = requests.post(f"{BASE_URL}/auth/register", json=payload_b, timeout=10)
+        data_b = resp_b.json()
+        token_b = data_b['token']
+        headers_b = {"Authorization": f"Bearer {token_b}"}
+        
+        # User B tries to GET User A's budgets (June 2025)
+        resp_get = requests.get(f"{BASE_URL}/budgets?month=2025-06", headers=headers_b, timeout=10)
+        budgets_b = resp_get.json().get('budgets', [])
+        
+        if len(budgets_b) == 0:
+            log_test("Test 17: RLS - User B cannot see User A budgets", True, "User B sees empty budgets")
+        else:
+            log_test("Test 17: RLS - User B cannot see User A budgets", False, f"User B sees {len(budgets_b)} budgets")
+        
+        # Get User A's budget ID
+        resp_a = requests.get(f"{BASE_URL}/budgets?month=2025-06", headers=headers, timeout=10)
+        budgets_a = resp_a.json().get('budgets', [])
+        
+        if len(budgets_a) > 0:
+            budget_a_id = budgets_a[0]['id']
+            
+            # User B tries to DELETE User A's budget
+            resp_del = requests.delete(f"{BASE_URL}/budgets/{budget_a_id}", headers=headers_b, timeout=10)
+            
+            # Verify with User A that budget still exists
+            resp_verify = requests.get(f"{BASE_URL}/budgets?month=2025-06", headers=headers, timeout=10)
+            budgets_verify = resp_verify.json().get('budgets', [])
+            
+            if len(budgets_verify) > 0 and budgets_verify[0]['id'] == budget_a_id:
+                log_test("Test 18: RLS - User B cannot delete User A budget", True, "Budget still exists for User A")
+            else:
+                log_test("Test 18: RLS - User B cannot delete User A budget", False, "Budget was deleted!")
+        else:
+            log_test("Test 18: RLS - User B cannot delete User A budget", False, "No User A budget to test")
+            
+    except Exception as e:
+        log_test("Test 17-18: RLS tests", False, f"Exception: {str(e)}")
+
 def main():
     print("=" * 60)
     print("FinMate Backend API Test Suite")
@@ -736,6 +1162,7 @@ def main():
     test_dashboard_summary()
     test_export_csv()
     test_rls()
+    test_budgets()
     
     print("\n" + "=" * 60)
     print("Test Suite Complete")

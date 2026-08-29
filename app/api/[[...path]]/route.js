@@ -350,6 +350,89 @@ async function handleRoute(request, { params }) {
       }
     }
 
+    // ============ BUDGETS ============
+    // Schema: { _id, user_id, category_id (ref categories), amount, month (YYYY-MM), created_at }
+    if (route === '/budgets' && method === 'GET') {
+      const url = new URL(request.url)
+      const monthParam = url.searchParams.get('month') // YYYY-MM
+      const now = new Date()
+      let month = monthParam || `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+      const [y, m] = month.split('-').map(Number)
+      const startOfMonth = new Date(y, m - 1, 1)
+      const endOfMonth = new Date(y, m, 0, 23, 59, 59, 999)
+
+      const budgets = await db.collection('budgets').find({ user_id: userId, month }).toArray()
+      // compute spent per category in that month
+      const spentAgg = await db.collection('transactions').aggregate([
+        { $match: { user_id: userId, type: 'expense', date: { $gte: startOfMonth, $lte: endOfMonth } } },
+        { $group: { _id: '$category_id', total: { $sum: '$amount' } } },
+      ]).toArray()
+      const spentMap = Object.fromEntries(spentAgg.map((r) => [r._id, r.total]))
+      const cats = await db.collection('categories').find({ user_id: userId, type: 'expense' }).toArray()
+      const catMap = Object.fromEntries(cats.map((c) => [c._id, c]))
+
+      const enriched = budgets.map((b) => {
+        const cat = catMap[b.category_id]
+        const spent = spentMap[b.category_id] || 0
+        const percent = b.amount > 0 ? Math.round((spent / b.amount) * 100) : 0
+        return {
+          id: b._id,
+          category_id: b.category_id,
+          category_name: cat?.name || 'Kategori dihapus',
+          category_icon: cat?.icon || '❓',
+          category_color: cat?.color || '#6b7280',
+          amount: b.amount,
+          month: b.month,
+          spent,
+          remaining: b.amount - spent,
+          percent,
+          status: percent >= 100 ? 'over' : percent >= 80 ? 'warning' : 'safe',
+        }
+      })
+      // sort by percent desc
+      enriched.sort((a, b) => b.percent - a.percent)
+
+      return handleCORS(NextResponse.json({ budgets: enriched, month }))
+    }
+
+    if (route === '/budgets' && method === 'POST') {
+      const body = await request.json()
+      const { category_id, amount, month } = body || {}
+      if (!category_id || !amount || !month) return badRequest('category_id, amount, month wajib diisi')
+      // upsert - one budget per category per month
+      const existing = await db.collection('budgets').findOne({ user_id: userId, category_id, month })
+      if (existing) {
+        await db.collection('budgets').updateOne({ _id: existing._id }, { $set: { amount: Number(amount) } })
+        return handleCORS(NextResponse.json({ ok: true, id: existing._id }))
+      }
+      const b = {
+        _id: uuidv4(),
+        user_id: userId,
+        category_id,
+        amount: Number(amount),
+        month,
+        created_at: new Date(),
+      }
+      await db.collection('budgets').insertOne(b)
+      return handleCORS(NextResponse.json({ budget: stripId(b) }))
+    }
+
+    const budgetMatch = route.match(/^\/budgets\/([^/]+)$/)
+    if (budgetMatch) {
+      const id = budgetMatch[1]
+      if (method === 'PUT') {
+        const body = await request.json()
+        const update = {}
+        if (body.amount !== undefined) update.amount = Number(body.amount)
+        await db.collection('budgets').updateOne({ _id: id, user_id: userId }, { $set: update })
+        return handleCORS(NextResponse.json({ ok: true }))
+      }
+      if (method === 'DELETE') {
+        await db.collection('budgets').deleteOne({ _id: id, user_id: userId })
+        return handleCORS(NextResponse.json({ ok: true }))
+      }
+    }
+
     // ============ DASHBOARD SUMMARY ============
     if (route === '/dashboard/summary' && method === 'GET') {
       const url = new URL(request.url)

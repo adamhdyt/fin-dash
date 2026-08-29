@@ -200,6 +200,21 @@ backend:
         agent: "testing"
         comment: "✅ CSV export test passed (1/1). GET /api/export/csv returns Content-Type: text/csv with correct header row ['Tanggal', 'Tipe', 'Jumlah (IDR)', 'Akun', 'Kategori', 'Tujuan Transfer', 'Catatan', 'Tags']. CSV is valid and parseable with 2 data rows."
 
+  - task: "Budgets CRUD dengan progress tracking"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "GET /api/budgets?month=YYYY-MM returns budgets with computed spent (sum expense in month per category), remaining, percent, status (safe/warning/over). POST /api/budgets {category_id, amount, month} - upsert (1 budget per cat per month). PUT /api/budgets/[id] update amount. DELETE /api/budgets/[id]. Only expense categories can be budgeted."
+      - working: true
+        agent: "testing"
+        comment: "✅ All budget tests passed (18/18). GET empty budgets initially works. POST creates budget successfully. Budget progress tracking accurate: spent=0→400K→900K→1.1M with status safe→warning→over and correct percent calculations (0%→40%→90%→110%). Upsert works correctly (no duplicates when posting same category+month). Month filtering works (June vs July budgets isolated). PUT updates amount correctly. DELETE removes budget. Validation returns 400 for missing fields (category_id, amount, month). RLS working: User B cannot see or delete User A's budgets."
+
   - task: "Auth middleware & RLS (per-user data isolation)"
     implemented: true
     working: true
@@ -231,7 +246,7 @@ frontend:
 metadata:
   created_by: "main_agent"
   version: "1.0"
-  test_sequence: 1
+  test_sequence: 2
   run_ui: false
 
 test_plan:
@@ -243,6 +258,7 @@ test_plan:
     - "Dashboard summary aggregation"
     - "Export CSV"
     - "Auth middleware & RLS (per-user data isolation)"
+    - "Budgets CRUD dengan progress tracking"
   stuck_tasks: []
   test_all: true
   test_priority: "high_first"
@@ -289,3 +305,36 @@ agent_communication:
       - RLS working perfectly: User B cannot see/modify/delete User A's data
       
       No critical issues found. Backend API is production-ready for Fase 1 MVP.
+  - agent: "testing"
+    message: |
+      ✅ BUDGETS ENDPOINT TESTING COMPLETE - ALL TESTS PASSED (18/18)
+      
+      Comprehensive testing of budget endpoints completed successfully:
+      
+      **Test Coverage:**
+      1. GET /api/budgets?month=YYYY-MM - Returns empty array initially ✅
+      2. POST /api/budgets - Creates budget successfully ✅
+      3. Budget progress tracking with transactions:
+         - Initial state: spent=0, remaining=1M, percent=0%, status=safe ✅
+         - After 400K expense: spent=400K, remaining=600K, percent=40%, status=safe ✅
+         - After 900K total: spent=900K, remaining=100K, percent=90%, status=warning ✅
+         - After 1.1M total: spent=1.1M, remaining=-100K, percent=110%, status=over ✅
+      4. Upsert functionality - POST same category+month updates (no duplicates) ✅
+      5. Month filtering - June and July budgets properly isolated ✅
+      6. PUT /api/budgets/[id] - Updates amount correctly ✅
+      7. DELETE /api/budgets/[id] - Removes budget successfully ✅
+      8. Validation - Returns 400 for missing category_id, amount, or month ✅
+      9. RLS (Row Level Security):
+         - User B cannot see User A's budgets ✅
+         - User B cannot delete User A's budgets ✅
+      
+      **Key Findings:**
+      - Budget calculations are accurate (spent, remaining, percent)
+      - Status transitions work correctly (safe → warning → over)
+      - Upsert prevents duplicate budgets per category per month
+      - Month filtering works perfectly
+      - RLS properly isolates user data
+      - All CRUD operations working as expected
+      
+      **Total Backend Tests: 52/52 PASSED (100%)**
+      No critical issues found. All backend endpoints production-ready.
