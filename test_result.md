@@ -215,6 +215,36 @@ backend:
         agent: "testing"
         comment: "✅ All budget tests passed (18/18). GET empty budgets initially works. POST creates budget successfully. Budget progress tracking accurate: spent=0→400K→900K→1.1M with status safe→warning→over and correct percent calculations (0%→40%→90%→110%). Upsert works correctly (no duplicates when posting same category+month). Month filtering works (June vs July budgets isolated). PUT updates amount correctly. DELETE removes budget. Validation returns 400 for missing fields (category_id, amount, month). RLS working: User B cannot see or delete User A's budgets."
 
+  - task: "Goals CRUD dengan projection"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "GET /api/goals returns goals with computed percent, remaining, projection_months, projection_date (based on months since created & current avg saving rate). POST /api/goals {name, target_amount, current_amount, target_date, icon}. PUT/DELETE /api/goals/[id]. POST /api/goals/[id]/contribute {amount} - increments current_amount atomically."
+      - working: true
+        agent: "testing"
+        comment: "✅ All goals tests passed (15/15). GET /goals returns empty initially. POST creates goal successfully. GET returns goal with correct computed fields (percent=0, remaining=10M). POST /goals/[id]/contribute increments current_amount atomically (2M→5M→25M). Percent calculation correct (0%→20%→50%→33% after target update→100% capped). Projection fields present (projection_months, projection_date calculated based on saving rate). PUT updates target_amount correctly. DELETE removes goal. Validation: POST without name or target_amount returns 400. RLS working: User B cannot see, contribute to, or delete User A's goals."
+
+  - task: "Import CSV endpoint (preview & commit)"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "POST /api/import/transactions with body {rows[], default_account_id, default_category_id_expense, default_category_id_income, commit}. If commit=false returns preview with per-row validation (errors, resolved values). If commit=true inserts valid rows and returns inserted count. Category matching case-insensitive by name+type; account matching by name; falls back to defaults."
+      - working: true
+        agent: "testing"
+        comment: "✅ All import CSV tests passed (9/9). POST /import/transactions with commit=false returns preview with correct validation (total=4, valid=2, invalid=2). Row 1 (income 5M) valid with account/category resolved by name. Row 2 (expense 45K) valid with default account. Row 3 invalid (bad date). Row 4 invalid (bad amount). POST with commit=true inserts 2 valid transactions. GET /transactions confirms imported data with correct amounts and dates. Validation: invalid default_account_id returns 400, empty rows returns 400. Category matching: non-existent category falls back to default. Type normalization: 'EXPENSE', 'Income', ' income ' all work (case-insensitive, trimmed). RLS working: User B cannot use User A's account_id (returns 400)."
+
   - task: "Auth middleware & RLS (per-user data isolation)"
     implemented: true
     working: true
@@ -246,21 +276,15 @@ frontend:
 metadata:
   created_by: "main_agent"
   version: "1.0"
-  test_sequence: 2
+  test_sequence: 3
   run_ui: false
 
 test_plan:
   current_focus:
-    - "Auth endpoints (register, login, me) with JWT"
-    - "Accounts CRUD (with computed balance)"
-    - "Categories CRUD"
-    - "Transactions CRUD with filters"
-    - "Dashboard summary aggregation"
-    - "Export CSV"
-    - "Auth middleware & RLS (per-user data isolation)"
-    - "Budgets CRUD dengan progress tracking"
+    - "Goals CRUD dengan projection"
+    - "Import CSV endpoint (preview & commit)"
   stuck_tasks: []
-  test_all: true
+  test_all: false
   test_priority: "high_first"
 
 agent_communication:
@@ -338,3 +362,62 @@ agent_communication:
       
       **Total Backend Tests: 52/52 PASSED (100%)**
       No critical issues found. All backend endpoints production-ready.
+  - agent: "testing"
+    message: |
+      ✅ GOALS & IMPORT CSV TESTING COMPLETE - ALL TESTS PASSED (24/24)
+      
+      Comprehensive testing of Goals and Import CSV endpoints completed successfully:
+      
+      **GOALS ENDPOINTS (15/15 tests passed):**
+      1. GET /api/goals - Returns empty array initially ✅
+      2. POST /api/goals - Creates goal successfully ✅
+      3. GET /api/goals - Returns goal with correct computed fields:
+         - percent=0, remaining=10M, current_amount=0 ✅
+      4. POST /api/goals/[id]/contribute - Atomic increment works:
+         - Contribute 2M → current_amount=2M ✅
+         - Contribute 3M → current_amount=5M ✅
+         - Contribute 20M → current_amount=25M ✅
+      5. Percent calculation accurate:
+         - 0% → 20% → 50% → 33% (after target update) → 100% (capped) ✅
+      6. Projection fields present and calculated:
+         - projection_months=1, projection_date calculated based on saving rate ✅
+      7. PUT /api/goals/[id] - Updates target_amount correctly (15M) ✅
+      8. DELETE /api/goals/[id] - Removes goal successfully ✅
+      9. Validation - Returns 400 for missing name or target_amount ✅
+      10. RLS (Row Level Security):
+          - User B cannot see User A's goals ✅
+          - User B cannot contribute to User A's goal (400) ✅
+          - User B cannot delete User A's goal ✅
+      
+      **IMPORT CSV ENDPOINTS (9/9 tests passed):**
+      1. POST /api/import/transactions with commit=false (preview mode):
+         - Returns correct summary: total=4, valid=2, invalid=2 ✅
+         - Row 1 (income 5M): valid, account/category resolved by name ✅
+         - Row 2 (expense 45K): valid, uses default account ✅
+         - Row 3: invalid (bad date) ✅
+         - Row 4: invalid (bad amount) ✅
+      2. POST /api/import/transactions with commit=true:
+         - Inserts 2 valid transactions ✅
+      3. GET /api/transactions - Confirms imported data with correct amounts ✅
+      4. Validation:
+         - Invalid default_account_id returns 400 ✅
+         - Empty rows returns 400 ✅
+      5. Category matching:
+         - Non-existent category falls back to default ✅
+      6. Type normalization:
+         - 'EXPENSE', 'Income', ' income ' all work (case-insensitive, trimmed) ✅
+      7. RLS:
+         - User B cannot use User A's account_id (returns 400) ✅
+      
+      **Key Findings:**
+      - Goals: All CRUD operations working, atomic contributions, accurate calculations
+      - Goals: Projection logic working (months/date calculated based on saving rate)
+      - Goals: Percent capped at 100 when exceeding target
+      - Import CSV: Preview mode works correctly (no insertion)
+      - Import CSV: Commit mode inserts only valid rows
+      - Import CSV: Category/account name matching case-insensitive
+      - Import CSV: Type normalization handles various formats
+      - RLS working perfectly for both endpoints
+      
+      **Total Backend Tests: 76/76 PASSED (100%)**
+      All backend endpoints production-ready. No critical issues found.

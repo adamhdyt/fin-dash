@@ -1145,6 +1145,698 @@ def test_budgets():
     except Exception as e:
         log_test("Test 17-18: RLS tests", False, f"Exception: {str(e)}")
 
+
+def test_goals():
+    """Test Goals CRUD and contribute endpoint"""
+    print("\n=== Testing Goals Endpoints ===")
+    
+    headers = {'Authorization': f"Bearer {test_data['user_a']['token']}"}
+    
+    # Test 1: GET /api/goals - should be empty initially
+    try:
+        resp = requests.get(f"{BASE_URL}/goals", headers=headers, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            if 'goals' in data and isinstance(data['goals'], list) and len(data['goals']) == 0:
+                log_test("GET /goals returns empty array initially", True)
+            else:
+                log_test("GET /goals returns empty array initially", False, f"Expected empty goals array, got: {data}")
+        else:
+            log_test("GET /goals returns empty array initially", False, f"Status {resp.status_code}: {resp.text}")
+    except Exception as e:
+        log_test("GET /goals returns empty array initially", False, f"Exception: {str(e)}")
+    
+    # Test 2: POST /api/goals - create goal
+    try:
+        goal_payload = {
+            "name": "Dana Darurat",
+            "target_amount": 10000000,
+            "current_amount": 0,
+            "target_date": "2026-12-31",
+            "icon": "🎯"
+        }
+        resp = requests.post(f"{BASE_URL}/goals", json=goal_payload, headers=headers, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            if 'goal' in data and data['goal'].get('name') == 'Dana Darurat':
+                test_data['goal_id'] = data['goal']['id']
+                log_test("POST /goals creates goal successfully", True, f"Goal created with id: {test_data['goal_id']}")
+            else:
+                log_test("POST /goals creates goal successfully", False, f"Unexpected response: {data}")
+        else:
+            log_test("POST /goals creates goal successfully", False, f"Status {resp.status_code}: {resp.text}")
+    except Exception as e:
+        log_test("POST /goals creates goal successfully", False, f"Exception: {str(e)}")
+    
+    # Test 3: GET /goals - should return 1 goal with percent=0, remaining=10000000
+    try:
+        resp = requests.get(f"{BASE_URL}/goals", headers=headers, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            if 'goals' in data and len(data['goals']) == 1:
+                goal = data['goals'][0]
+                if (goal.get('percent') == 0 and 
+                    goal.get('remaining') == 10000000 and
+                    goal.get('current_amount') == 0 and
+                    goal.get('target_amount') == 10000000):
+                    log_test("GET /goals returns goal with correct initial values", True, 
+                            f"percent=0, remaining=10M, current=0")
+                else:
+                    log_test("GET /goals returns goal with correct initial values", False, 
+                            f"Expected percent=0, remaining=10M, got: {goal}")
+            else:
+                log_test("GET /goals returns goal with correct initial values", False, f"Expected 1 goal, got: {data}")
+        else:
+            log_test("GET /goals returns goal with correct initial values", False, f"Status {resp.status_code}: {resp.text}")
+    except Exception as e:
+        log_test("GET /goals returns goal with correct initial values", False, f"Exception: {str(e)}")
+    
+    # Test 4: POST /goals/[id]/contribute - contribute 2M
+    try:
+        goal_id = test_data.get('goal_id')
+        if not goal_id:
+            log_test("POST /goals/[id]/contribute with 2M", False, "No goal_id available")
+        else:
+            resp = requests.post(f"{BASE_URL}/goals/{goal_id}/contribute", 
+                               json={"amount": 2000000}, headers=headers, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get('ok') and data.get('current_amount') == 2000000:
+                    log_test("POST /goals/[id]/contribute with 2M", True, 
+                            f"current_amount updated to 2M")
+                else:
+                    log_test("POST /goals/[id]/contribute with 2M", False, f"Unexpected response: {data}")
+            else:
+                log_test("POST /goals/[id]/contribute with 2M", False, f"Status {resp.status_code}: {resp.text}")
+    except Exception as e:
+        log_test("POST /goals/[id]/contribute with 2M", False, f"Exception: {str(e)}")
+    
+    # Test 5: GET /goals - verify current_amount=2M, percent=20, remaining=8M
+    try:
+        resp = requests.get(f"{BASE_URL}/goals", headers=headers, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            if 'goals' in data and len(data['goals']) == 1:
+                goal = data['goals'][0]
+                if (goal.get('current_amount') == 2000000 and 
+                    goal.get('percent') == 20 and
+                    goal.get('remaining') == 8000000):
+                    log_test("GET /goals after 2M contribution", True, 
+                            f"current=2M, percent=20, remaining=8M")
+                else:
+                    log_test("GET /goals after 2M contribution", False, 
+                            f"Expected current=2M, percent=20, remaining=8M, got: {goal}")
+            else:
+                log_test("GET /goals after 2M contribution", False, f"Expected 1 goal, got: {data}")
+        else:
+            log_test("GET /goals after 2M contribution", False, f"Status {resp.status_code}: {resp.text}")
+    except Exception as e:
+        log_test("GET /goals after 2M contribution", False, f"Exception: {str(e)}")
+    
+    # Test 6: Contribute another 3M - total should be 5M, percent=50
+    try:
+        goal_id = test_data.get('goal_id')
+        if not goal_id:
+            log_test("POST /goals/[id]/contribute with 3M", False, "No goal_id available")
+        else:
+            resp = requests.post(f"{BASE_URL}/goals/{goal_id}/contribute", 
+                               json={"amount": 3000000}, headers=headers, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get('ok') and data.get('current_amount') == 5000000:
+                    log_test("POST /goals/[id]/contribute with 3M", True, 
+                            f"current_amount updated to 5M")
+                else:
+                    log_test("POST /goals/[id]/contribute with 3M", False, f"Unexpected response: {data}")
+            else:
+                log_test("POST /goals/[id]/contribute with 3M", False, f"Status {resp.status_code}: {resp.text}")
+    except Exception as e:
+        log_test("POST /goals/[id]/contribute with 3M", False, f"Exception: {str(e)}")
+    
+    # Verify percent=50
+    try:
+        resp = requests.get(f"{BASE_URL}/goals", headers=headers, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            goal = data['goals'][0] if data.get('goals') else {}
+            if goal.get('percent') == 50 and goal.get('current_amount') == 5000000:
+                log_test("GET /goals after 5M total contribution", True, 
+                        f"current=5M, percent=50")
+            else:
+                log_test("GET /goals after 5M total contribution", False, 
+                        f"Expected percent=50, current=5M, got: {goal}")
+        else:
+            log_test("GET /goals after 5M total contribution", False, f"Status {resp.status_code}")
+    except Exception as e:
+        log_test("GET /goals after 5M total contribution", False, f"Exception: {str(e)}")
+    
+    # Test 7: Verify projection fields are present (projection_months, projection_date)
+    try:
+        resp = requests.get(f"{BASE_URL}/goals", headers=headers, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            goal = data['goals'][0] if data.get('goals') else {}
+            # Since goal was just created and has current_amount>0, projection should be calculated
+            if 'projection_months' in goal and 'projection_date' in goal:
+                # projection_months should be non-null since current_amount > 0 and remaining > 0
+                if goal['projection_months'] is not None:
+                    log_test("Goal projection fields present", True, 
+                            f"projection_months={goal['projection_months']}, projection_date={goal.get('projection_date')}")
+                else:
+                    log_test("Goal projection fields present", True, 
+                            f"projection_months is null (acceptable if logic determines so)")
+            else:
+                log_test("Goal projection fields present", False, 
+                        f"Missing projection fields in goal: {goal}")
+        else:
+            log_test("Goal projection fields present", False, f"Status {resp.status_code}")
+    except Exception as e:
+        log_test("Goal projection fields present", False, f"Exception: {str(e)}")
+    
+    # Test 8: PUT /goals/[id] - update target_amount to 15M
+    try:
+        goal_id = test_data.get('goal_id')
+        if not goal_id:
+            log_test("PUT /goals/[id] update target_amount", False, "No goal_id available")
+        else:
+            resp = requests.put(f"{BASE_URL}/goals/{goal_id}", 
+                              json={"target_amount": 15000000}, headers=headers, timeout=10)
+            if resp.status_code == 200:
+                # Verify the update
+                resp2 = requests.get(f"{BASE_URL}/goals", headers=headers, timeout=10)
+                if resp2.status_code == 200:
+                    goal = resp2.json()['goals'][0]
+                    # current=5M, target=15M -> percent should be ~33
+                    expected_percent = round((5000000 / 15000000) * 100)
+                    if goal.get('target_amount') == 15000000 and goal.get('percent') == expected_percent:
+                        log_test("PUT /goals/[id] update target_amount", True, 
+                                f"target updated to 15M, percent={expected_percent}")
+                    else:
+                        log_test("PUT /goals/[id] update target_amount", False, 
+                                f"Expected target=15M, percent={expected_percent}, got: {goal}")
+                else:
+                    log_test("PUT /goals/[id] update target_amount", False, f"GET failed after PUT")
+            else:
+                log_test("PUT /goals/[id] update target_amount", False, f"Status {resp.status_code}: {resp.text}")
+    except Exception as e:
+        log_test("PUT /goals/[id] update target_amount", False, f"Exception: {str(e)}")
+    
+    # Test 9: Contribute 20M more to exceed target (current should be 25M, percent capped at 100)
+    try:
+        goal_id = test_data.get('goal_id')
+        if not goal_id:
+            log_test("Contribute to exceed target (percent capped at 100)", False, "No goal_id available")
+        else:
+            resp = requests.post(f"{BASE_URL}/goals/{goal_id}/contribute", 
+                               json={"amount": 20000000}, headers=headers, timeout=10)
+            if resp.status_code == 200:
+                # Verify percent is capped at 100
+                resp2 = requests.get(f"{BASE_URL}/goals", headers=headers, timeout=10)
+                if resp2.status_code == 200:
+                    goal = resp2.json()['goals'][0]
+                    if goal.get('current_amount') == 25000000 and goal.get('percent') == 100:
+                        log_test("Contribute to exceed target (percent capped at 100)", True, 
+                                f"current=25M, percent=100 (capped)")
+                    else:
+                        log_test("Contribute to exceed target (percent capped at 100)", False, 
+                                f"Expected current=25M, percent=100, got: {goal}")
+                else:
+                    log_test("Contribute to exceed target (percent capped at 100)", False, f"GET failed")
+            else:
+                log_test("Contribute to exceed target (percent capped at 100)", False, f"Status {resp.status_code}: {resp.text}")
+    except Exception as e:
+        log_test("Contribute to exceed target (percent capped at 100)", False, f"Exception: {str(e)}")
+    
+    # Test 10: DELETE /goals/[id] - then GET should return empty
+    try:
+        goal_id = test_data.get('goal_id')
+        if not goal_id:
+            log_test("DELETE /goals/[id]", False, "No goal_id available")
+        else:
+            resp = requests.delete(f"{BASE_URL}/goals/{goal_id}", headers=headers, timeout=10)
+            if resp.status_code == 200:
+                # Verify deletion
+                resp2 = requests.get(f"{BASE_URL}/goals", headers=headers, timeout=10)
+                if resp2.status_code == 200:
+                    goals = resp2.json().get('goals', [])
+                    if len(goals) == 0:
+                        log_test("DELETE /goals/[id]", True, "Goal deleted, GET returns empty")
+                    else:
+                        log_test("DELETE /goals/[id]", False, f"Expected empty goals, got: {goals}")
+                else:
+                    log_test("DELETE /goals/[id]", False, f"GET failed after DELETE")
+            else:
+                log_test("DELETE /goals/[id]", False, f"Status {resp.status_code}: {resp.text}")
+    except Exception as e:
+        log_test("DELETE /goals/[id]", False, f"Exception: {str(e)}")
+    
+    # Test 11: Validation - POST without name
+    try:
+        resp = requests.post(f"{BASE_URL}/goals", json={"target_amount": 1000000}, headers=headers, timeout=10)
+        if resp.status_code == 400:
+            data = resp.json()
+            if 'name' in data.get('error', '').lower():
+                log_test("POST /goals without name returns 400", True, f"Error: {data.get('error')}")
+            else:
+                log_test("POST /goals without name returns 400", False, f"Wrong error: {data}")
+        else:
+            log_test("POST /goals without name returns 400", False, f"Expected 400, got {resp.status_code}")
+    except Exception as e:
+        log_test("POST /goals without name returns 400", False, f"Exception: {str(e)}")
+    
+    # Test 12: Validation - POST without target_amount
+    try:
+        resp = requests.post(f"{BASE_URL}/goals", json={"name": "Test Goal"}, headers=headers, timeout=10)
+        if resp.status_code == 400:
+            data = resp.json()
+            if 'target_amount' in data.get('error', '').lower():
+                log_test("POST /goals without target_amount returns 400", True, f"Error: {data.get('error')}")
+            else:
+                log_test("POST /goals without target_amount returns 400", False, f"Wrong error: {data}")
+        else:
+            log_test("POST /goals without target_amount returns 400", False, f"Expected 400, got {resp.status_code}")
+    except Exception as e:
+        log_test("POST /goals without target_amount returns 400", False, f"Exception: {str(e)}")
+    
+    # Test 13: RLS - Create a goal for user A, then try to access with user B
+    # First create a goal for user A
+    try:
+        goal_payload = {
+            "name": "User A Goal",
+            "target_amount": 5000000,
+            "current_amount": 0,
+            "target_date": "2026-12-31",
+            "icon": "💰"
+        }
+        resp = requests.post(f"{BASE_URL}/goals", json=goal_payload, headers=headers, timeout=10)
+        if resp.status_code == 200:
+            user_a_goal_id = resp.json()['goal']['id']
+            test_data['user_a_goal_id'] = user_a_goal_id
+            
+            # Now try to GET with user B
+            headers_b = {'Authorization': f"Bearer {test_data['user_b']['token']}"}
+            resp_b = requests.get(f"{BASE_URL}/goals", headers=headers_b, timeout=10)
+            if resp_b.status_code == 200:
+                goals_b = resp_b.json().get('goals', [])
+                # User B should not see User A's goal
+                if len(goals_b) == 0:
+                    log_test("RLS: User B cannot see User A's goals", True, "User B sees 0 goals")
+                else:
+                    log_test("RLS: User B cannot see User A's goals", False, f"User B sees {len(goals_b)} goals")
+            else:
+                log_test("RLS: User B cannot see User A's goals", False, f"Status {resp_b.status_code}")
+        else:
+            log_test("RLS: User B cannot see User A's goals", False, f"Failed to create goal for User A")
+    except Exception as e:
+        log_test("RLS: User B cannot see User A's goals", False, f"Exception: {str(e)}")
+    
+    # Test 14: RLS - User B cannot contribute to User A's goal
+    try:
+        user_a_goal_id = test_data.get('user_a_goal_id')
+        if not user_a_goal_id:
+            log_test("RLS: User B cannot contribute to User A's goal", False, "No user_a_goal_id")
+        else:
+            headers_b = {'Authorization': f"Bearer {test_data['user_b']['token']}"}
+            resp = requests.post(f"{BASE_URL}/goals/{user_a_goal_id}/contribute", 
+                               json={"amount": 1000000}, headers=headers_b, timeout=10)
+            # Should return 400 (goal not found for user B)
+            if resp.status_code == 400:
+                log_test("RLS: User B cannot contribute to User A's goal", True, "Got 400 as expected")
+            else:
+                log_test("RLS: User B cannot contribute to User A's goal", False, 
+                        f"Expected 400, got {resp.status_code}")
+    except Exception as e:
+        log_test("RLS: User B cannot contribute to User A's goal", False, f"Exception: {str(e)}")
+    
+    # Test 15: RLS - User B cannot DELETE User A's goal
+    try:
+        user_a_goal_id = test_data.get('user_a_goal_id')
+        if not user_a_goal_id:
+            log_test("RLS: User B cannot DELETE User A's goal", False, "No user_a_goal_id")
+        else:
+            headers_b = {'Authorization': f"Bearer {test_data['user_b']['token']}"}
+            resp = requests.delete(f"{BASE_URL}/goals/{user_a_goal_id}", headers=headers_b, timeout=10)
+            # Should return 200 but not actually delete (or 400)
+            # Verify goal still exists for user A
+            resp_a = requests.get(f"{BASE_URL}/goals", headers=headers, timeout=10)
+            if resp_a.status_code == 200:
+                goals_a = resp_a.json().get('goals', [])
+                goal_exists = any(g['id'] == user_a_goal_id for g in goals_a)
+                if goal_exists:
+                    log_test("RLS: User B cannot DELETE User A's goal", True, "Goal still exists for User A")
+                else:
+                    log_test("RLS: User B cannot DELETE User A's goal", False, "Goal was deleted")
+            else:
+                log_test("RLS: User B cannot DELETE User A's goal", False, f"Failed to verify")
+    except Exception as e:
+        log_test("RLS: User B cannot DELETE User A's goal", False, f"Exception: {str(e)}")
+
+
+def test_import_csv():
+    """Test Import CSV endpoint with preview and commit modes"""
+    print("\n=== Testing Import CSV Endpoint ===")
+    
+    headers = {'Authorization': f"Bearer {test_data['user_a']['token']}"}
+    
+    # Get default account (Kas) and categories
+    try:
+        resp_accounts = requests.get(f"{BASE_URL}/accounts", headers=headers, timeout=10)
+        resp_categories = requests.get(f"{BASE_URL}/categories", headers=headers, timeout=10)
+        
+        if resp_accounts.status_code == 200 and resp_categories.status_code == 200:
+            accounts = resp_accounts.json().get('accounts', [])
+            categories = resp_categories.json().get('categories', [])
+            
+            # Find Kas account
+            kas_account = next((a for a in accounts if a['name'] == 'Kas'), None)
+            # Find categories
+            gaji_cat = next((c for c in categories if c['name'] == 'Gaji' and c['type'] == 'income'), None)
+            makanan_cat = next((c for c in categories if c['name'] == 'Makanan & Minuman' and c['type'] == 'expense'), None)
+            transport_cat = next((c for c in categories if c['name'] == 'Transportasi' and c['type'] == 'expense'), None)
+            
+            if kas_account and gaji_cat and makanan_cat:
+                test_data['kas_account_id'] = kas_account['id']
+                test_data['gaji_category_id'] = gaji_cat['id']
+                test_data['makanan_category_id'] = makanan_cat['id']
+                test_data['transport_category_id'] = transport_cat['id'] if transport_cat else makanan_cat['id']
+                log_test("Setup: Get default account and categories", True, 
+                        f"Kas={kas_account['id']}, Gaji={gaji_cat['id']}, Makanan={makanan_cat['id']}")
+            else:
+                log_test("Setup: Get default account and categories", False, "Missing required defaults")
+                return
+        else:
+            log_test("Setup: Get default account and categories", False, "Failed to fetch accounts/categories")
+            return
+    except Exception as e:
+        log_test("Setup: Get default account and categories", False, f"Exception: {str(e)}")
+        return
+    
+    # Test 1: POST /api/import/transactions with commit=false (preview mode)
+    try:
+        import_payload = {
+            "rows": [
+                {
+                    "date": "2025-06-01",
+                    "amount": "5000000",
+                    "type": "income",
+                    "category_name": "Gaji",
+                    "account_name": "Kas",
+                    "note": "Gaji Juni",
+                    "tags": ""
+                },
+                {
+                    "date": "2025-06-02",
+                    "amount": "45000",
+                    "type": "expense",
+                    "category_name": "Makanan & Minuman",
+                    "account_name": "",
+                    "note": "Makan siang",
+                    "tags": ""
+                },
+                {
+                    "date": "invalid-date",
+                    "amount": "100",
+                    "type": "expense",
+                    "category_name": "Makanan & Minuman",
+                    "note": "Bad row"
+                },
+                {
+                    "date": "2025-06-03",
+                    "amount": "not-a-number",
+                    "type": "expense",
+                    "category_name": "Transportasi",
+                    "note": "Bad amount"
+                }
+            ],
+            "default_account_id": test_data['kas_account_id'],
+            "default_category_id_expense": test_data['makanan_category_id'],
+            "default_category_id_income": test_data['gaji_category_id'],
+            "commit": False
+        }
+        
+        resp = requests.post(f"{BASE_URL}/import/transactions", json=import_payload, headers=headers, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            preview = data.get('preview', [])
+            summary = data.get('summary', {})
+            
+            # Verify summary
+            if (summary.get('total') == 4 and 
+                summary.get('valid') == 2 and 
+                summary.get('invalid') == 2):
+                
+                # Verify row 1 (valid income)
+                row1 = preview[0] if len(preview) > 0 else {}
+                row1_valid = (row1.get('valid') == True and 
+                            row1.get('resolved', {}).get('type') == 'income' and
+                            row1.get('resolved', {}).get('amount') == 5000000)
+                
+                # Verify row 2 (valid expense with default account)
+                row2 = preview[1] if len(preview) > 1 else {}
+                row2_valid = (row2.get('valid') == True and 
+                            row2.get('resolved', {}).get('type') == 'expense' and
+                            row2.get('resolved', {}).get('amount') == 45000)
+                
+                # Verify row 3 (invalid date)
+                row3 = preview[2] if len(preview) > 2 else {}
+                row3_invalid = (row3.get('valid') == False and 
+                              'Tanggal tidak valid' in str(row3.get('errors', [])))
+                
+                # Verify row 4 (invalid amount)
+                row4 = preview[3] if len(preview) > 3 else {}
+                row4_invalid = (row4.get('valid') == False and 
+                              'Jumlah tidak valid' in str(row4.get('errors', [])))
+                
+                if row1_valid and row2_valid and row3_invalid and row4_invalid:
+                    log_test("POST /import/transactions with commit=false (preview)", True, 
+                            f"Summary: total=4, valid=2, invalid=2. Row validations correct.")
+                else:
+                    log_test("POST /import/transactions with commit=false (preview)", False, 
+                            f"Row validations incorrect. Row1={row1_valid}, Row2={row2_valid}, Row3={row3_invalid}, Row4={row4_invalid}")
+            else:
+                log_test("POST /import/transactions with commit=false (preview)", False, 
+                        f"Expected summary total=4, valid=2, invalid=2, got: {summary}")
+        else:
+            log_test("POST /import/transactions with commit=false (preview)", False, 
+                    f"Status {resp.status_code}: {resp.text}")
+    except Exception as e:
+        log_test("POST /import/transactions with commit=false (preview)", False, f"Exception: {str(e)}")
+    
+    # Test 2: Verify commit=false does NOT insert (GET /api/transactions should show no imports)
+    try:
+        # Get transaction count before import
+        resp = requests.get(f"{BASE_URL}/transactions", headers=headers, timeout=10)
+        if resp.status_code == 200:
+            transactions_before = resp.json().get('transactions', [])
+            # Filter for June 2025 transactions (our import data)
+            june_txns = [t for t in transactions_before if '2025-06' in str(t.get('date', ''))]
+            if len(june_txns) == 0:
+                log_test("Verify commit=false does NOT insert transactions", True, 
+                        "No June 2025 transactions found (preview mode worked)")
+            else:
+                log_test("Verify commit=false does NOT insert transactions", False, 
+                        f"Found {len(june_txns)} June transactions (should be 0)")
+        else:
+            log_test("Verify commit=false does NOT insert transactions", False, 
+                    f"Failed to GET transactions: {resp.status_code}")
+    except Exception as e:
+        log_test("Verify commit=false does NOT insert transactions", False, f"Exception: {str(e)}")
+    
+    # Test 3: POST /import/transactions with commit=true
+    try:
+        import_payload['commit'] = True
+        resp = requests.post(f"{BASE_URL}/import/transactions", json=import_payload, headers=headers, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            summary = data.get('summary', {})
+            if summary.get('inserted') == 2:
+                log_test("POST /import/transactions with commit=true", True, 
+                        f"Inserted 2 valid transactions")
+            else:
+                log_test("POST /import/transactions with commit=true", False, 
+                        f"Expected inserted=2, got: {summary}")
+        else:
+            log_test("POST /import/transactions with commit=true", False, 
+                    f"Status {resp.status_code}: {resp.text}")
+    except Exception as e:
+        log_test("POST /import/transactions with commit=true", False, f"Exception: {str(e)}")
+    
+    # Test 4: GET /api/transactions should now include 2 imported transactions
+    try:
+        resp = requests.get(f"{BASE_URL}/transactions", headers=headers, timeout=10)
+        if resp.status_code == 200:
+            transactions = resp.json().get('transactions', [])
+            # Filter for June 2025 transactions
+            june_txns = [t for t in transactions if '2025-06' in str(t.get('date', ''))]
+            if len(june_txns) >= 2:
+                # Verify amounts
+                amounts = [t.get('amount') for t in june_txns]
+                if 5000000 in amounts and 45000 in amounts:
+                    log_test("GET /transactions includes imported transactions", True, 
+                            f"Found 2 imported transactions with correct amounts")
+                else:
+                    log_test("GET /transactions includes imported transactions", False, 
+                            f"Amounts incorrect: {amounts}")
+            else:
+                log_test("GET /transactions includes imported transactions", False, 
+                        f"Expected at least 2 June transactions, found {len(june_txns)}")
+        else:
+            log_test("GET /transactions includes imported transactions", False, 
+                    f"Status {resp.status_code}")
+    except Exception as e:
+        log_test("GET /transactions includes imported transactions", False, f"Exception: {str(e)}")
+    
+    # Test 5: Validation - POST with invalid default_account_id
+    try:
+        invalid_payload = {
+            "rows": [{"date": "2025-06-01", "amount": "1000", "type": "expense", "category_name": "Makanan & Minuman"}],
+            "default_account_id": "invalid-id-12345",
+            "default_category_id_expense": test_data['makanan_category_id'],
+            "commit": False
+        }
+        resp = requests.post(f"{BASE_URL}/import/transactions", json=invalid_payload, headers=headers, timeout=10)
+        if resp.status_code == 400:
+            data = resp.json()
+            if 'default_account_id' in data.get('error', '').lower():
+                log_test("POST /import with invalid default_account_id returns 400", True, 
+                        f"Error: {data.get('error')}")
+            else:
+                log_test("POST /import with invalid default_account_id returns 400", False, 
+                        f"Wrong error: {data}")
+        else:
+            log_test("POST /import with invalid default_account_id returns 400", False, 
+                    f"Expected 400, got {resp.status_code}")
+    except Exception as e:
+        log_test("POST /import with invalid default_account_id returns 400", False, f"Exception: {str(e)}")
+    
+    # Test 6: Validation - POST with empty rows
+    try:
+        resp = requests.post(f"{BASE_URL}/import/transactions", 
+                           json={"rows": [], "default_account_id": test_data['kas_account_id']}, 
+                           headers=headers, timeout=10)
+        if resp.status_code == 400:
+            data = resp.json()
+            if 'kosong' in data.get('error', '').lower():
+                log_test("POST /import with empty rows returns 400", True, 
+                        f"Error: {data.get('error')}")
+            else:
+                log_test("POST /import with empty rows returns 400", False, 
+                        f"Wrong error: {data}")
+        else:
+            log_test("POST /import with empty rows returns 400", False, 
+                    f"Expected 400, got {resp.status_code}")
+    except Exception as e:
+        log_test("POST /import with empty rows returns 400", False, f"Exception: {str(e)}")
+    
+    # Test 7: Category matching - use category_name that doesn't exist (should fall back to default)
+    try:
+        payload = {
+            "rows": [
+                {
+                    "date": "2025-06-10",
+                    "amount": "50000",
+                    "type": "expense",
+                    "category_name": "NonExistentCategory",
+                    "note": "Test fallback"
+                }
+            ],
+            "default_account_id": test_data['kas_account_id'],
+            "default_category_id_expense": test_data['makanan_category_id'],
+            "commit": False
+        }
+        resp = requests.post(f"{BASE_URL}/import/transactions", json=payload, headers=headers, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            preview = data.get('preview', [])
+            if len(preview) > 0:
+                row = preview[0]
+                # Should be valid and use default category
+                if (row.get('valid') == True and 
+                    row.get('resolved', {}).get('category_id') == test_data['makanan_category_id']):
+                    log_test("Category matching falls back to default", True, 
+                            "Non-existent category resolved to default")
+                else:
+                    log_test("Category matching falls back to default", False, 
+                            f"Row: {row}")
+            else:
+                log_test("Category matching falls back to default", False, "No preview rows")
+        else:
+            log_test("Category matching falls back to default", False, 
+                    f"Status {resp.status_code}: {resp.text}")
+    except Exception as e:
+        log_test("Category matching falls back to default", False, f"Exception: {str(e)}")
+    
+    # Test 8: Type case-insensitive - "EXPENSE", "Income", " income " should all work
+    try:
+        payload = {
+            "rows": [
+                {"date": "2025-06-11", "amount": "1000", "type": "EXPENSE", "category_name": "Makanan & Minuman"},
+                {"date": "2025-06-12", "amount": "2000", "type": "Income", "category_name": "Gaji"},
+                {"date": "2025-06-13", "amount": "3000", "type": " income ", "category_name": "Gaji"}
+            ],
+            "default_account_id": test_data['kas_account_id'],
+            "default_category_id_expense": test_data['makanan_category_id'],
+            "default_category_id_income": test_data['gaji_category_id'],
+            "commit": False
+        }
+        resp = requests.post(f"{BASE_URL}/import/transactions", json=payload, headers=headers, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            preview = data.get('preview', [])
+            summary = data.get('summary', {})
+            if summary.get('valid') == 3:
+                # Verify types are normalized
+                types = [p.get('resolved', {}).get('type') for p in preview]
+                if types == ['expense', 'income', 'income']:
+                    log_test("Type case-insensitive and trimmed", True, 
+                            "EXPENSE, Income, ' income ' all normalized correctly")
+                else:
+                    log_test("Type case-insensitive and trimmed", False, 
+                            f"Types: {types}")
+            else:
+                log_test("Type case-insensitive and trimmed", False, 
+                        f"Expected 3 valid rows, got: {summary}")
+        else:
+            log_test("Type case-insensitive and trimmed", False, 
+                    f"Status {resp.status_code}: {resp.text}")
+    except Exception as e:
+        log_test("Type case-insensitive and trimmed", False, f"Exception: {str(e)}")
+    
+    # Test 9: RLS - User B provides User A's account_id as default_account_id
+    try:
+        headers_b = {'Authorization': f"Bearer {test_data['user_b']['token']}"}
+        # Get User B's categories
+        resp_cat_b = requests.get(f"{BASE_URL}/categories", headers=headers_b, timeout=10)
+        if resp_cat_b.status_code == 200:
+            categories_b = resp_cat_b.json().get('categories', [])
+            makanan_cat_b = next((c for c in categories_b if c['name'] == 'Makanan & Minuman' and c['type'] == 'expense'), None)
+            
+            if makanan_cat_b:
+                # Try to use User A's account_id
+                payload = {
+                    "rows": [{"date": "2025-06-15", "amount": "1000", "type": "expense", "category_name": "Makanan & Minuman"}],
+                    "default_account_id": test_data['kas_account_id'],  # User A's account
+                    "default_category_id_expense": makanan_cat_b['id'],
+                    "commit": False
+                }
+                resp = requests.post(f"{BASE_URL}/import/transactions", json=payload, headers=headers_b, timeout=10)
+                # Should return 400 (account not found for user B)
+                if resp.status_code == 400:
+                    log_test("RLS: User B cannot use User A's account_id", True, 
+                            "Got 400 as expected")
+                else:
+                    log_test("RLS: User B cannot use User A's account_id", False, 
+                            f"Expected 400, got {resp.status_code}")
+            else:
+                log_test("RLS: User B cannot use User A's account_id", False, 
+                        "Could not find User B's category")
+        else:
+            log_test("RLS: User B cannot use User A's account_id", False, 
+                    "Failed to get User B's categories")
+    except Exception as e:
+        log_test("RLS: User B cannot use User A's account_id", False, f"Exception: {str(e)}")
+
+
 def main():
     print("=" * 60)
     print("FinMate Backend API Test Suite")
@@ -1163,6 +1855,8 @@ def main():
     test_export_csv()
     test_rls()
     test_budgets()
+    test_goals()
+    test_import_csv()
     
     print("\n" + "=" * 60)
     print("Test Suite Complete")

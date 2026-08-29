@@ -433,6 +433,204 @@ async function handleRoute(request, { params }) {
       }
     }
 
+    // ============ IMPORT CSV ============
+    // POST /api/import/transactions
+    // Body: { rows: [{date, amount, type, category_name, account_name, note, tags}], default_account_id, default_category_id_expense, default_category_id_income, commit: bool }
+    if (route === '/import/transactions' && method === 'POST') {
+      const body = await request.json()
+      const { rows = [], default_account_id, default_category_id_expense, default_category_id_income, commit = false } = body || {}
+      if (!Array.isArray(rows) || rows.length === 0) return badRequest('Rows kosong')
+
+      const [accounts, categories] = await Promise.all([
+        db.collection('accounts').find({ user_id: userId }).toArray(),
+        db.collection('categories').find({ user_id: userId }).toArray(),
+      ])
+      const accByName = Object.fromEntries(accounts.map((a) => [a.name.toLowerCase().trim(), a._id]))
+      const catByName = {}
+      categories.forEach((c) => { catByName[`${c.type}::${c.name.toLowerCase().trim()}`] = c._id })
+
+      const validAccountId = (id) => accounts.some((a) => a._id === id)
+      const validCatId = (id) => categories.some((c) => c._id === id)
+
+      if (!default_account_id || !validAccountId(default_account_id)) return badRequest('default_account_id tidak valid')
+      if (default_category_id_expense && !validCatId(default_category_id_expense)) return badRequest('default_category_id_expense tidak valid')
+      if (default_category_id_income && !validCatId(default_category_id_income)) return badRequest('default_category_id_income tidak valid')
+
+      const preview = rows.map((r, idx) => {
+        const errors = []
+        // Type
+        let type = (r.type || 'expense').toString().toLowerCase().trim()
+        if (!['income', 'expense'].includes(type)) type = 'expense'
+
+        // Amount
+        const rawAmount = String(r.amount ?? '').replace(/[^\d.-]/g, '')
+        const amount = Number(rawAmount)
+        if (!amount || amount <= 0 || isNaN(amount)) errors.push('Jumlah tidak valid')
+
+        // Date
+        let date = null
+        if (r.date) {
+          const d = new Date(r.date)
+          if (!isNaN(d.getTime())) date = d
+        }
+        if (!date) errors.push('Tanggal tidak valid')
+
+        // Account resolution
+        let account_id = default_account_id
+        if (r.account_name) {
+          const found = accByName[String(r.account_name).toLowerCase().trim()]
+          if (found) account_id = found
+        }
+
+        // Category resolution
+        let category_id = null
+        if (r.category_name) {
+          const key = `${type}::${String(r.category_name).toLowerCase().trim()}`
+          if (catByName[key]) category_id = catByName[key]
+        }
+        if (!category_id) {
+          category_id = type === 'income' ? default_category_id_income : default_category_id_expense
+        }
+        if (!category_id) errors.push('Kategori tidak dapat di-resolve (set fallback)')
+
+        return {
+          index: idx + 1,
+          valid: errors.length === 0,
+          errors,
+          resolved: {
+            type, amount, date, account_id, category_id,
+            note: r.note || '',
+            tags: r.tags ? String(r.tags).split(/[;,]/).map((t) => t.trim()).filter(Boolean) : [],
+          },
+          raw: r,
+        }
+      })
+
+      const summary = {
+        total: preview.length,
+        valid: preview.filter((p) => p.valid).length,
+        invalid: preview.filter((p) => !p.valid).length,
+      }
+
+      if (commit) {
+        const toInsert = preview.filter((p) => p.valid).map((p) => ({
+          _id: uuidv4(),
+          user_id: userId,
+          type: p.resolved.type,
+          amount: p.resolved.amount,
+          account_id: p.resolved.account_id,
+          category_id: p.resolved.category_id,
+          transfer_to_account_id: null,
+          date: p.resolved.date,
+          note: p.resolved.note,
+          tags: p.resolved.tags,
+          created_at: new Date(),
+        }))
+        if (toInsert.length > 0) await db.collection('transactions').insertMany(toInsert)
+        summary.inserted = toInsert.length
+      }
+
+      // Slim preview for response
+      const previewOut = preview.map((p) => ({
+        index: p.index,
+        valid: p.valid,
+        errors: p.errors,
+        resolved: p.valid ? {
+          type: p.resolved.type,
+          amount: p.resolved.amount,
+          date: p.resolved.date,
+          account_id: p.resolved.account_id,
+          category_id: p.resolved.category_id,
+          note: p.resolved.note,
+          tags: p.resolved.tags,
+        } : null,
+        raw: p.raw,
+      }))
+
+      return handleCORS(NextResponse.json({ preview: previewOut, summary }))
+    }
+
+    // ============ GOALS ============
+    // Schema: { _id, user_id, name, target_amount, current_amount, target_date, icon, created_at }
+    if (route === '/goals' && method === 'GET') {
+      const goals = await db.collection('goals').find({ user_id: userId }).sort({ created_at: -1 }).toArray()
+      const enriched = goals.map((g) => {
+        const percent = g.target_amount > 0 ? Math.min(100, Math.round((g.current_amount / g.target_amount) * 100)) : 0
+        const remaining = Math.max(0, g.target_amount - g.current_amount)
+        let projectionMonths = null
+        let projectionDate = null
+        // Estimate months to target based on average monthly saving
+        // Simple heuristic: if created_at + current_amount>0, monthly_avg = current_amount / months_since_created
+        if (g.current_amount > 0 && remaining > 0) {
+          const created = new Date(g.created_at)
+          const now = new Date()
+          const monthsPassed = Math.max(1, (now.getFullYear() - created.getFullYear()) * 12 + (now.getMonth() - created.getMonth()) + (now.getDate() >= created.getDate() ? 1 : 0))
+          const monthlyAvg = g.current_amount / monthsPassed
+          if (monthlyAvg > 0) {
+            projectionMonths = Math.ceil(remaining / monthlyAvg)
+            projectionDate = new Date(now.getFullYear(), now.getMonth() + projectionMonths, 1)
+          }
+        }
+        return {
+          ...stripId(g),
+          percent,
+          remaining,
+          projection_months: projectionMonths,
+          projection_date: projectionDate,
+        }
+      })
+      return handleCORS(NextResponse.json({ goals: enriched }))
+    }
+
+    if (route === '/goals' && method === 'POST') {
+      const body = await request.json()
+      const { name, target_amount, current_amount, target_date, icon } = body || {}
+      if (!name || !target_amount) return badRequest('name & target_amount wajib diisi')
+      const goal = {
+        _id: uuidv4(),
+        user_id: userId,
+        name,
+        target_amount: Number(target_amount),
+        current_amount: Number(current_amount) || 0,
+        target_date: target_date ? new Date(target_date) : null,
+        icon: icon || '🎯',
+        created_at: new Date(),
+      }
+      await db.collection('goals').insertOne(goal)
+      return handleCORS(NextResponse.json({ goal: stripId(goal) }))
+    }
+
+    const goalMatch = route.match(/^\/goals\/([^/]+)$/)
+    if (goalMatch) {
+      const id = goalMatch[1]
+      if (method === 'PUT') {
+        const body = await request.json()
+        const update = {}
+        ;['name', 'icon'].forEach((k) => { if (body[k] !== undefined) update[k] = body[k] })
+        if (body.target_amount !== undefined) update.target_amount = Number(body.target_amount)
+        if (body.current_amount !== undefined) update.current_amount = Number(body.current_amount)
+        if (body.target_date !== undefined) update.target_date = body.target_date ? new Date(body.target_date) : null
+        await db.collection('goals').updateOne({ _id: id, user_id: userId }, { $set: update })
+        return handleCORS(NextResponse.json({ ok: true }))
+      }
+      if (method === 'DELETE') {
+        await db.collection('goals').deleteOne({ _id: id, user_id: userId })
+        return handleCORS(NextResponse.json({ ok: true }))
+      }
+    }
+
+    const goalContribMatch = route.match(/^\/goals\/([^/]+)\/contribute$/)
+    if (goalContribMatch && method === 'POST') {
+      const id = goalContribMatch[1]
+      const body = await request.json()
+      const amount = Number(body.amount)
+      if (!amount) return badRequest('amount wajib diisi')
+      const goal = await db.collection('goals').findOne({ _id: id, user_id: userId })
+      if (!goal) return badRequest('Goal tidak ditemukan')
+      await db.collection('goals').updateOne({ _id: id, user_id: userId }, { $inc: { current_amount: amount } })
+      return handleCORS(NextResponse.json({ ok: true, current_amount: (goal.current_amount || 0) + amount }))
+    }
+
     // ============ DASHBOARD SUMMARY ============
     if (route === '/dashboard/summary' && method === 'GET') {
       const url = new URL(request.url)

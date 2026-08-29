@@ -18,7 +18,7 @@ import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, 
 import {
   Wallet, TrendingUp, TrendingDown, PlusCircle, LogOut, LayoutDashboard, ArrowLeftRight,
   Tag, Download, Trash2, Edit2, ArrowUpCircle, ArrowDownCircle, Loader2, Search, Menu, X,
-  Target, AlertTriangle, CheckCircle2
+  Target, AlertTriangle, CheckCircle2, Upload, FileText, Trophy, Plus
 } from 'lucide-react'
 
 export default function DashboardPage() {
@@ -117,7 +117,9 @@ export default function DashboardPage() {
     { id: 'transactions', label: 'Transaksi', icon: ArrowLeftRight },
     { id: 'pockets', label: 'Kantong', icon: Wallet },
     { id: 'budgets', label: 'Budget', icon: Target },
+    { id: 'goals', label: 'Goals', icon: Trophy },
     { id: 'categories', label: 'Kategori', icon: Tag },
+    { id: 'import', label: 'Import CSV', icon: Upload },
     { id: 'export', label: 'Export Data', icon: Download },
   ]
 
@@ -199,6 +201,9 @@ export default function DashboardPage() {
           {tab === 'budgets' && (
             <BudgetsTab categories={categories} onRefreshSummary={refreshSummary} />
           )}
+          {tab === 'goals' && (
+            <GoalsTab />
+          )}
           {tab === 'categories' && (
             <CategoriesTab categories={categories}
               onAdd={() => setCatDialog({ open: true, editing: null })}
@@ -212,6 +217,7 @@ export default function DashboardPage() {
             />
           )}
           {tab === 'export' && <ExportTab onExport={handleExport} accounts={accounts} />}
+          {tab === 'import' && <ImportTab accounts={accounts} categories={categories} onImported={loadAll} />}
         </div>
       </main>
 
@@ -1051,5 +1057,551 @@ function CategoryDialog({ state, setState, onSaved }) {
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  )
+}
+
+
+// ============ GOALS TAB ============
+function GoalsTab() {
+  const [goals, setGoals] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [dialog, setDialog] = useState({ open: false, editing: null })
+  const [contribDialog, setContribDialog] = useState({ open: false, goal: null })
+
+  const load = async () => {
+    setLoading(true)
+    try {
+      const r = await apiFetch('/goals')
+      setGoals(r.goals)
+    } catch (e) { toast.error(e.message) }
+    finally { setLoading(false) }
+  }
+  useEffect(() => { load() }, [])
+
+  return (
+    <div className="space-y-4">
+      <div className="flex justify-end">
+        <Button onClick={() => setDialog({ open: true, editing: null })} className="bg-emerald-600 hover:bg-emerald-700">
+          <PlusCircle className="h-4 w-4 mr-2" />Buat Goal Baru
+        </Button>
+      </div>
+      {loading ? (
+        <div className="py-10 flex justify-center"><Loader2 className="h-6 w-6 animate-spin text-emerald-600" /></div>
+      ) : goals.length === 0 ? (
+        <Card>
+          <CardContent className="py-16 text-center">
+            <Trophy className="h-12 w-12 mx-auto text-muted-foreground mb-3" />
+            <p className="font-medium mb-1">Belum ada goal tabungan</p>
+            <p className="text-sm text-muted-foreground mb-4">Buat target seperti "Dana Darurat", "DP Rumah", atau "Liburan Bali"</p>
+            <Button onClick={() => setDialog({ open: true, editing: null })} className="bg-emerald-600 hover:bg-emerald-700">
+              <PlusCircle className="h-4 w-4 mr-2" />Buat Goal Pertama
+            </Button>
+          </CardContent>
+        </Card>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {goals.map((g) => <GoalCard key={g.id} g={g}
+            onEdit={() => setDialog({ open: true, editing: g })}
+            onContribute={() => setContribDialog({ open: true, goal: g })}
+            onDelete={async () => {
+              if (!confirm(`Hapus goal "${g.name}"?`)) return
+              await apiFetch(`/goals/${g.id}`, { method: 'DELETE' })
+              toast.success('Goal dihapus'); await load()
+            }} />)}
+        </div>
+      )}
+      <GoalDialog state={dialog} setState={setDialog} onSaved={load} />
+      <ContributeDialog state={contribDialog} setState={setContribDialog} onSaved={load} />
+    </div>
+  )
+}
+
+function GoalCard({ g, onEdit, onContribute, onDelete }) {
+  const isDone = g.percent >= 100
+  const targetDateStr = g.target_date ? formatDate(g.target_date) : null
+  const projectionStr = g.projection_date ? formatDate(g.projection_date) : null
+
+  return (
+    <Card className={isDone ? 'border-emerald-500 border-2' : ''}>
+      <CardContent className="p-5">
+        <div className="flex items-start justify-between mb-3">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="h-12 w-12 rounded-xl bg-emerald-50 dark:bg-emerald-900/30 flex items-center justify-center text-2xl">{g.icon}</div>
+            <div className="min-w-0">
+              <p className="font-semibold truncate">{g.name}</p>
+              {isDone ? (
+                <div className="inline-flex items-center gap-1 text-xs font-medium text-emerald-600">
+                  <Trophy className="h-3 w-3" />Target tercapai!
+                </div>
+              ) : targetDateStr && <p className="text-xs text-muted-foreground">Target: {targetDateStr}</p>}
+            </div>
+          </div>
+          <div className="flex gap-1 flex-shrink-0">
+            <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onEdit}><Edit2 className="h-3.5 w-3.5" /></Button>
+            <Button variant="ghost" size="icon" className="h-8 w-8 text-rose-600" onClick={onDelete}><Trash2 className="h-3.5 w-3.5" /></Button>
+          </div>
+        </div>
+        <div className="flex items-baseline justify-between mb-2">
+          <p className="text-sm text-muted-foreground">Progress</p>
+          <p className="font-bold tabular-nums text-emerald-600">{g.percent}%</p>
+        </div>
+        <div className="h-2.5 rounded-full bg-muted overflow-hidden mb-4">
+          <div className="h-full transition-all bg-gradient-to-r from-emerald-500 to-teal-500" style={{ width: `${g.percent}%` }} />
+        </div>
+        <div className="flex justify-between text-sm mb-4">
+          <div>
+            <p className="text-xs text-muted-foreground">Terkumpul</p>
+            <p className="font-semibold tabular-nums text-emerald-600">{formatIDR(g.current_amount)}</p>
+          </div>
+          <div className="text-right">
+            <p className="text-xs text-muted-foreground">Target</p>
+            <p className="font-semibold tabular-nums">{formatIDR(g.target_amount)}</p>
+          </div>
+          <div className="text-right">
+            <p className="text-xs text-muted-foreground">Kurang</p>
+            <p className="font-semibold tabular-nums">{formatIDR(g.remaining)}</p>
+          </div>
+        </div>
+        {!isDone && projectionStr && (
+          <div className="text-xs text-muted-foreground p-2 rounded-lg bg-muted/50 mb-3">
+            📊 Estimasi tercapai: <b className="text-foreground">{projectionStr}</b> (dengan kecepatan menabung saat ini)
+          </div>
+        )}
+        <Button size="sm" onClick={onContribute} className="w-full bg-emerald-600 hover:bg-emerald-700" disabled={isDone}>
+          <Plus className="h-3.5 w-3.5 mr-1" />Tambah Tabungan
+        </Button>
+      </CardContent>
+    </Card>
+  )
+}
+
+function GoalDialog({ state, setState, onSaved }) {
+  const editing = state.editing
+  const [form, setForm] = useState({ name: '', target_amount: '', current_amount: '0', target_date: '', icon: '🎯' })
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    if (state.open) {
+      if (editing) setForm({
+        name: editing.name, target_amount: String(editing.target_amount),
+        current_amount: String(editing.current_amount),
+        target_date: editing.target_date ? new Date(editing.target_date).toISOString().slice(0, 10) : '',
+        icon: editing.icon,
+      })
+      else setForm({ name: '', target_amount: '', current_amount: '0', target_date: '', icon: '🎯' })
+    }
+  }, [state.open, editing])
+
+  const save = async () => {
+    if (!form.name.trim()) return toast.error('Nama goal wajib diisi')
+    if (!form.target_amount || Number(form.target_amount) <= 0) return toast.error('Target harus > 0')
+    setSaving(true)
+    try {
+      const payload = {
+        name: form.name.trim(),
+        target_amount: Number(form.target_amount),
+        current_amount: Number(form.current_amount) || 0,
+        target_date: form.target_date || null,
+        icon: form.icon,
+      }
+      if (editing) await apiFetch(`/goals/${editing.id}`, { method: 'PUT', body: JSON.stringify(payload) })
+      else await apiFetch('/goals', { method: 'POST', body: JSON.stringify(payload) })
+      toast.success(editing ? 'Goal diperbarui' : 'Goal dibuat')
+      setState({ open: false, editing: null }); await onSaved()
+    } catch (e) { toast.error(e.message) }
+    finally { setSaving(false) }
+  }
+
+  return (
+    <Dialog open={state.open} onOpenChange={(o) => setState({ open: o, editing: o ? editing : null })}>
+      <DialogContent>
+        <DialogHeader><DialogTitle>{editing ? 'Edit Goal' : 'Goal Tabungan Baru'}</DialogTitle></DialogHeader>
+        <div className="space-y-4">
+          <div className="grid grid-cols-4 gap-3">
+            <div className="col-span-3 space-y-2">
+              <Label>Nama goal</Label>
+              <Input placeholder="Dana Darurat" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+            </div>
+            <div className="space-y-2">
+              <Label>Ikon</Label>
+              <Input maxLength={4} value={form.icon} onChange={(e) => setForm({ ...form, icon: e.target.value })} />
+            </div>
+          </div>
+          <div className="space-y-2">
+            <Label>Target jumlah (IDR)</Label>
+            <Input type="number" min="0" step="100000" placeholder="10000000" value={form.target_amount} onChange={(e) => setForm({ ...form, target_amount: e.target.value })} className="text-lg font-semibold" />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-2">
+              <Label>Sudah terkumpul</Label>
+              <Input type="number" min="0" value={form.current_amount} onChange={(e) => setForm({ ...form, current_amount: e.target.value })} />
+            </div>
+            <div className="space-y-2">
+              <Label>Tenggat (opsional)</Label>
+              <Input type="date" value={form.target_date} onChange={(e) => setForm({ ...form, target_date: e.target.value })} />
+            </div>
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setState({ open: false, editing: null })}>Batal</Button>
+          <Button onClick={save} disabled={saving} className="bg-emerald-600 hover:bg-emerald-700">
+            {saving && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}Simpan
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function ContributeDialog({ state, setState, onSaved }) {
+  const goal = state.goal
+  const [amount, setAmount] = useState('')
+  const [saving, setSaving] = useState(false)
+  useEffect(() => { if (state.open) setAmount('') }, [state.open])
+  const submit = async () => {
+    if (!amount || Number(amount) <= 0) return toast.error('Jumlah harus > 0')
+    setSaving(true)
+    try {
+      await apiFetch(`/goals/${goal.id}/contribute`, { method: 'POST', body: JSON.stringify({ amount: Number(amount) }) })
+      toast.success(`Berhasil menambah ${formatIDR(Number(amount))} ke ${goal.name}`)
+      setState({ open: false, goal: null }); await onSaved()
+    } catch (e) { toast.error(e.message) }
+    finally { setSaving(false) }
+  }
+  if (!goal) return null
+  return (
+    <Dialog open={state.open} onOpenChange={(o) => setState({ open: o, goal: o ? goal : null })}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{goal.icon} Tambah Tabungan: {goal.name}</DialogTitle>
+          <DialogDescription>Sudah terkumpul {formatIDR(goal.current_amount)} dari {formatIDR(goal.target_amount)}</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-2">
+          <Label>Jumlah tabungan (IDR)</Label>
+          <Input type="number" min="0" step="10000" placeholder="500000" value={amount} onChange={(e) => setAmount(e.target.value)} className="text-lg font-semibold" autoFocus />
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setState({ open: false, goal: null })}>Batal</Button>
+          <Button onClick={submit} disabled={saving} className="bg-emerald-600 hover:bg-emerald-700">
+            {saving && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}Tambah
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+// ============ IMPORT CSV TAB ============
+function parseCSV(text) {
+  const rows = []
+  let row = []
+  let field = ''
+  let inQuotes = false
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]
+    if (inQuotes) {
+      if (c === '"') {
+        if (text[i + 1] === '"') { field += '"'; i++ } else inQuotes = false
+      } else field += c
+    } else {
+      if (c === '"') inQuotes = true
+      else if (c === ',') { row.push(field); field = '' }
+      else if (c === '\n') { row.push(field); rows.push(row); row = []; field = '' }
+      else if (c === '\r') { /* skip */ }
+      else field += c
+    }
+  }
+  if (field.length > 0 || row.length > 0) { row.push(field); rows.push(row) }
+  return rows.filter((r) => r.some((f) => f.trim() !== ''))
+}
+
+const IMPORT_FIELDS = [
+  { key: 'date', label: 'Tanggal', required: true },
+  { key: 'amount', label: 'Jumlah', required: true },
+  { key: 'type', label: 'Tipe (income/expense)', required: false },
+  { key: 'category_name', label: 'Nama Kategori', required: false },
+  { key: 'account_name', label: 'Nama Kantong', required: false },
+  { key: 'note', label: 'Catatan', required: false },
+  { key: 'tags', label: 'Tags', required: false },
+]
+
+function ImportTab({ accounts, categories, onImported }) {
+  const [step, setStep] = useState(1) // 1=upload, 2=map, 3=preview
+  const [rawRows, setRawRows] = useState([]) // parsed CSV
+  const [hasHeader, setHasHeader] = useState(true)
+  const [mapping, setMapping] = useState({}) // field key -> column index
+  const [defaults, setDefaults] = useState({ account_id: '', cat_expense: '', cat_income: '' })
+  const [preview, setPreview] = useState(null)
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    if (!defaults.account_id && accounts.length > 0) {
+      const catExp = categories.find((c) => c.type === 'expense')
+      const catInc = categories.find((c) => c.type === 'income')
+      setDefaults({ account_id: accounts[0].id, cat_expense: catExp?.id || '', cat_income: catInc?.id || '' })
+    }
+  }, [accounts, categories])
+
+  const handleFile = async (file) => {
+    if (!file) return
+    const text = await file.text()
+    const parsed = parseCSV(text)
+    if (parsed.length === 0) return toast.error('CSV kosong')
+    setRawRows(parsed)
+    // Auto-guess mapping based on header names
+    if (parsed[0]) {
+      const headers = parsed[0].map((h) => h.toLowerCase().trim())
+      const guess = {}
+      headers.forEach((h, i) => {
+        if (/tanggal|date/.test(h)) guess.date = i
+        else if (/jumlah|amount|nominal/.test(h)) guess.amount = i
+        else if (/tipe|type|jenis/.test(h)) guess.type = i
+        else if (/kategori|category/.test(h)) guess.category_name = i
+        else if (/kantong|akun|account/.test(h)) guess.account_name = i
+        else if (/catatan|note|keterangan|deskripsi/.test(h)) guess.note = i
+        else if (/tag/.test(h)) guess.tags = i
+      })
+      setMapping(guess)
+    }
+    setStep(2)
+  }
+
+  const downloadTemplate = () => {
+    const csv = [
+      ['Tanggal', 'Jumlah', 'Tipe', 'Kategori', 'Kantong', 'Catatan', 'Tags'].join(','),
+      '2025-06-01,5000000,income,Gaji,Rekening BCA,Gaji bulanan,',
+      '2025-06-02,45000,expense,Makanan & Minuman,Kas,Makan siang,',
+      '2025-06-03,150000,expense,Transportasi,Kas,Bensin mingguan,rutin',
+    ].join('\n')
+    const blob = new Blob([csv], { type: 'text/csv' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a'); a.href = url; a.download = 'finmate-template.csv'
+    a.click(); URL.revokeObjectURL(url)
+  }
+
+  const dataRows = hasHeader ? rawRows.slice(1) : rawRows
+  const headers = hasHeader ? rawRows[0] || [] : (rawRows[0] || []).map((_, i) => `Kolom ${i + 1}`)
+
+  const runPreview = async (commit) => {
+    if (mapping.date === undefined || mapping.amount === undefined) {
+      return toast.error('Kolom Tanggal & Jumlah wajib di-map')
+    }
+    if (!defaults.account_id) return toast.error('Pilih kantong default')
+
+    const rows = dataRows.map((r) => {
+      const obj = {}
+      IMPORT_FIELDS.forEach((f) => {
+        if (mapping[f.key] !== undefined) obj[f.key] = r[mapping[f.key]] || ''
+      })
+      return obj
+    })
+
+    setBusy(true)
+    try {
+      const res = await apiFetch('/import/transactions', {
+        method: 'POST',
+        body: JSON.stringify({
+          rows,
+          default_account_id: defaults.account_id,
+          default_category_id_expense: defaults.cat_expense,
+          default_category_id_income: defaults.cat_income,
+          commit,
+        }),
+      })
+      setPreview(res)
+      if (commit) {
+        toast.success(`Berhasil import ${res.summary.inserted} transaksi!`)
+        // Reset
+        setStep(1); setRawRows([]); setMapping({}); setPreview(null)
+        if (onImported) await onImported()
+      } else {
+        setStep(3)
+      }
+    } catch (e) { toast.error(e.message) }
+    finally { setBusy(false) }
+  }
+
+  const accMap = Object.fromEntries(accounts.map((a) => [a.id, a]))
+  const catMap = Object.fromEntries(categories.map((c) => [c.id, c]))
+
+  return (
+    <div className="space-y-4 max-w-5xl">
+      <Card>
+        <CardHeader>
+          <CardTitle>Import CSV dari Excel/Google Sheets</CardTitle>
+          <CardDescription>Migrasi data lama Anda dengan 3 langkah mudah: upload → map kolom → konfirmasi.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="flex gap-2 mb-4">
+            {[
+              { n: 1, l: 'Upload' }, { n: 2, l: 'Map Kolom' }, { n: 3, l: 'Preview & Import' }
+            ].map((s, i, arr) => (
+              <div key={s.n} className="flex items-center gap-2 flex-1">
+                <div className={`h-8 w-8 rounded-full flex items-center justify-center text-sm font-bold ${step >= s.n ? 'bg-emerald-600 text-white' : 'bg-muted text-muted-foreground'}`}>{s.n}</div>
+                <span className={`text-sm font-medium ${step >= s.n ? '' : 'text-muted-foreground'}`}>{s.l}</span>
+                {i < arr.length - 1 && <div className={`flex-1 h-0.5 ${step > s.n ? 'bg-emerald-600' : 'bg-muted'}`} />}
+              </div>
+            ))}
+          </div>
+
+          {step === 1 && (
+            <div className="space-y-4">
+              <Button variant="outline" onClick={downloadTemplate}>
+                <FileText className="h-4 w-4 mr-2" />Download Template CSV
+              </Button>
+              <label className="block border-2 border-dashed rounded-xl p-12 text-center cursor-pointer hover:bg-muted/50 transition">
+                <Upload className="h-10 w-10 mx-auto text-muted-foreground mb-3" />
+                <p className="font-medium">Klik untuk upload file CSV</p>
+                <p className="text-xs text-muted-foreground mt-1">atau drag & drop file di sini</p>
+                <input type="file" accept=".csv,text/csv" className="hidden" onChange={(e) => handleFile(e.target.files?.[0])} />
+              </label>
+            </div>
+          )}
+
+          {step === 2 && (
+            <div className="space-y-4">
+              <div className="flex items-center gap-2 text-sm">
+                <input type="checkbox" id="hasheader" checked={hasHeader} onChange={(e) => setHasHeader(e.target.checked)} />
+                <label htmlFor="hasheader">Baris pertama adalah header</label>
+                <span className="text-muted-foreground ml-2">• {dataRows.length} baris data terdeteksi</span>
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-2">
+                {IMPORT_FIELDS.map((f) => (
+                  <div key={f.key} className="space-y-1.5">
+                    <Label className="text-xs">{f.label} {f.required && <span className="text-rose-500">*</span>}</Label>
+                    <Select value={mapping[f.key] !== undefined ? String(mapping[f.key]) : '-1'}
+                      onValueChange={(v) => setMapping({ ...mapping, [f.key]: v === '-1' ? undefined : Number(v) })}>
+                      <SelectTrigger><SelectValue placeholder="- Tidak digunakan -" /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="-1">- Tidak digunakan -</SelectItem>
+                        {headers.map((h, i) => <SelectItem key={i} value={String(i)}>{h || `Kolom ${i + 1}`}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                ))}
+              </div>
+
+              <div className="border-t pt-4 space-y-3">
+                <p className="font-medium text-sm">Default (fallback jika data CSV tidak lengkap):</p>
+                <div className="grid gap-3 sm:grid-cols-3">
+                  <div className="space-y-1.5">
+                    <Label className="text-xs">Kantong default *</Label>
+                    <Select value={defaults.account_id} onValueChange={(v) => setDefaults({ ...defaults, account_id: v })}>
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {accounts.map((a) => <SelectItem key={a.id} value={a.id}>{a.icon} {a.name}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label className="text-xs">Kategori expense fallback</Label>
+                    <Select value={defaults.cat_expense} onValueChange={(v) => setDefaults({ ...defaults, cat_expense: v })}>
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {categories.filter((c) => c.type === 'expense').map((c) => <SelectItem key={c.id} value={c.id}>{c.icon} {c.name}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label className="text-xs">Kategori income fallback</Label>
+                    <Select value={defaults.cat_income} onValueChange={(v) => setDefaults({ ...defaults, cat_income: v })}>
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {categories.filter((c) => c.type === 'income').map((c) => <SelectItem key={c.id} value={c.id}>{c.icon} {c.name}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+              </div>
+
+              {/* Preview of first rows */}
+              <div className="border rounded-lg overflow-auto max-h-64">
+                <table className="w-full text-xs">
+                  <thead className="bg-muted/50 sticky top-0">
+                    <tr>
+                      {headers.map((h, i) => <th key={i} className="p-2 text-left font-medium">{h || `Kolom ${i + 1}`}</th>)}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {dataRows.slice(0, 8).map((r, i) => (
+                      <tr key={i} className="border-t">
+                        {r.map((c, j) => <td key={j} className="p-2">{c}</td>)}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="flex justify-between gap-2">
+                <Button variant="outline" onClick={() => { setStep(1); setRawRows([]); setMapping({}) }}>Kembali</Button>
+                <Button onClick={() => runPreview(false)} disabled={busy} className="bg-emerald-600 hover:bg-emerald-700">
+                  {busy && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}Preview Data
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {step === 3 && preview && (
+            <div className="space-y-4">
+              <div className="grid grid-cols-3 gap-3">
+                <div className="rounded-lg border p-3">
+                  <p className="text-xs text-muted-foreground">Total baris</p>
+                  <p className="text-2xl font-bold">{preview.summary.total}</p>
+                </div>
+                <div className="rounded-lg border border-emerald-200 bg-emerald-50 dark:bg-emerald-900/20 p-3">
+                  <p className="text-xs text-emerald-700 dark:text-emerald-400">Valid (akan diimport)</p>
+                  <p className="text-2xl font-bold text-emerald-600">{preview.summary.valid}</p>
+                </div>
+                <div className="rounded-lg border border-rose-200 bg-rose-50 dark:bg-rose-900/20 p-3">
+                  <p className="text-xs text-rose-700 dark:text-rose-400">Invalid (dilewati)</p>
+                  <p className="text-2xl font-bold text-rose-600">{preview.summary.invalid}</p>
+                </div>
+              </div>
+
+              <div className="border rounded-lg overflow-auto max-h-96">
+                <table className="w-full text-xs">
+                  <thead className="bg-muted/50 sticky top-0">
+                    <tr>
+                      <th className="p-2 text-left">#</th>
+                      <th className="p-2 text-left">Status</th>
+                      <th className="p-2 text-left">Tanggal</th>
+                      <th className="p-2 text-left">Tipe</th>
+                      <th className="p-2 text-right">Jumlah</th>
+                      <th className="p-2 text-left">Kantong</th>
+                      <th className="p-2 text-left">Kategori</th>
+                      <th className="p-2 text-left">Catatan</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {preview.preview.map((p) => (
+                      <tr key={p.index} className={`border-t ${p.valid ? '' : 'bg-rose-50 dark:bg-rose-900/10'}`}>
+                        <td className="p-2">{p.index}</td>
+                        <td className="p-2">
+                          {p.valid ? <span className="text-emerald-600">✓ Valid</span> : <span className="text-rose-600" title={p.errors.join(', ')}>✗ {p.errors[0]}</span>}
+                        </td>
+                        <td className="p-2">{p.resolved?.date ? formatDate(p.resolved.date) : p.raw.date}</td>
+                        <td className="p-2">{p.resolved?.type || p.raw.type}</td>
+                        <td className="p-2 text-right tabular-nums">{p.resolved ? formatIDR(p.resolved.amount) : p.raw.amount}</td>
+                        <td className="p-2">{p.resolved?.account_id ? `${accMap[p.resolved.account_id]?.icon || ''} ${accMap[p.resolved.account_id]?.name || '?'}` : ''}</td>
+                        <td className="p-2">{p.resolved?.category_id ? `${catMap[p.resolved.category_id]?.icon || ''} ${catMap[p.resolved.category_id]?.name || '?'}` : ''}</td>
+                        <td className="p-2 max-w-xs truncate">{p.raw.note}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="flex justify-between gap-2">
+                <Button variant="outline" onClick={() => setStep(2)}>Kembali</Button>
+                <Button onClick={() => runPreview(true)} disabled={busy || preview.summary.valid === 0} className="bg-emerald-600 hover:bg-emerald-700">
+                  {busy && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}Import {preview.summary.valid} Transaksi Valid
+                </Button>
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    </div>
   )
 }
